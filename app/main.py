@@ -64,6 +64,11 @@ async def shutdown() -> None:
     pass
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"message": "Merchant Core API is running"}
+
+
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"status": "healthy"}
