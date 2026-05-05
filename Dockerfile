@@ -9,7 +9,7 @@ COPY alembic/ ./alembic/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir fastapi uvicorn sqlalchemy pymysql pydantic-settings \
-    "pydantic[email]" python-jose bcrypt alembic
+    "pydantic[email]" python-jose[cryptography] bcrypt alembic cryptography
 
 # Copy application code
 COPY app/ ./app/
