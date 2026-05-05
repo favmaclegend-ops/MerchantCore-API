@@ -1,0 +1,36 @@
+[project]
+name = "merchant-core-api"
+version = "0.1.0"
+description = "Merchant Core API Service"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.136.1",
+    "uvicorn[standard]>=0.34.0",
+    "sqlalchemy>=2.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "pydantic[email]",
+    "bcrypt>=4.0.0",
+    "alembic>=1.14.0",
+    "python-jose[cryptography]>=3.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.9.0",
+    "fastapi-cli",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
