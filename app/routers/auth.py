@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.security import create_access_token, decode_access_token, get_password_hash, verify_password
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=Message, status_code=status.HTTP_201_CREATED)
-def register(user_in: UserCreate, db: Session = Depends(get_db)) -> dict:
+def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
     existing = db.query(User).filter(User.email == user_in.email).first()
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
@@ -29,11 +29,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)) -> dict:
     db.commit()
     db.refresh(user)
 
-    if not send_verification_email(user_in.email, token):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email",
-        )
+    background_tasks.add_task(send_verification_email, user_in.email, token)
 
     return {"message": "Registration successful. Please check your email to verify your account."}
 

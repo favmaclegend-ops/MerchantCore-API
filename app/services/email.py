@@ -5,7 +5,8 @@ from app.config import settings
 
 
 def send_verification_email(email: str, token: str) -> bool:
-    verification_link = f"http://localhost:8000/api/v1/auth/verify-email?token={token}"
+    base_url = settings.PUBLIC_URL or "https://merchantcore-api.onrender.com"
+    verification_link = f"{base_url}/api/v1/auth/verify-email?token={token}"
     html_content = f"""\
 <html>
 <body>
@@ -24,7 +25,7 @@ def send_verification_email(email: str, token: str) -> bool:
     msg["To"] = email
 
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
             server.starttls()
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.sendmail(settings.SMTP_FROM_EMAIL, email, msg.as_string())

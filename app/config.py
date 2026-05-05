@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_FROM_NAME: str = "Merchant Core API"
 
+    PUBLIC_URL: str = "https://merchantcore-api.onrender.com"
+
     @property
     def sqlalchemy_database_url(self) -> str:
         """Ensure correct driver and clean query params for MySQL."""
