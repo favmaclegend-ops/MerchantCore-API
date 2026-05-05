@@ -150,9 +150,4 @@ merchant-core-api/
 ```
 
 ## License
-
-[Add your license here]
-
-## Contact
-
-[Add contact information here]
+MIT
