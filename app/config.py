@@ -23,11 +23,8 @@ class Settings(BaseSettings):
 
     DEBUG: bool = False
 
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_FROM_EMAIL: str = ""
+    RESEND_API_KEY: str = ""
+    SMTP_FROM_EMAIL: str = "onboarding@resend.dev"
     SMTP_FROM_NAME: str = "Merchant Core API"
 
     PUBLIC_URL: str | None = None
