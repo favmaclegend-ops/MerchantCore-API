@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_FROM_NAME: str = "Merchant Core API"
 
-    PUBLIC_URL: str = "https://merchantcore-api.onrender.com"
+    PUBLIC_URL: str | None = None
 
     @property
     def sqlalchemy_database_url(self) -> str:
