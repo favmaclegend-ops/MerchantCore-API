@@ -6,7 +6,8 @@ from app.config import settings
 connect_args = {}
 db_url = settings.sqlalchemy_database_url
 if "aiven" in db_url.lower():
-    connect_args["ssl"] = {"ca": "/etc/ssl/certs/ca-certificates.crt"}
+    # Aiven requires SSL but doesn't need explicit CA cert for PyMySQL
+    connect_args["ssl"] = {}
 
 engine = create_engine(db_url, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

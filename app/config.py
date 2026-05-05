@@ -1,3 +1,5 @@
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,10 +32,22 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_url(self) -> str:
-        """Ensure correct driver is used for MySQL."""
+        """Ensure correct driver and clean query params for MySQL."""
         url = self.DATABASE_URL
+        # Replace mysql:// with mysql+pymysql:// if needed
         if url.startswith("mysql://") and "+pymysql" not in url:
-            return url.replace("mysql://", "mysql+pymysql://", 1)
+            url = url.replace("mysql://", "mysql+pymysql://", 1)
+        
+        # Strip unsupported query params like ssl-mode
+        parsed = urlparse(url)
+        if parsed.query:
+            query_params = parse_qs(parsed.query)
+            query_params.pop("ssl-mode", None)
+            new_query = urlencode(query_params, doseq=True)
+            url = urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, new_query, parsed.fragment
+            ))
         return url
 
 
