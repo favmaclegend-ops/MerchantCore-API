@@ -56,7 +56,12 @@ async def startup() -> None:
         finally:
             conn.close()
 
-    Base.metadata.create_all(bind=engine)
+    # Run Alembic migrations
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
 
 
 @app.on_event("shutdown")
