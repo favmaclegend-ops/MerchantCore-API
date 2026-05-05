@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlparse
 
+import pymysql
 from app.config import settings
 from app.db.session import Base, engine
 from app.models import User  # noqa: F401
@@ -35,6 +37,25 @@ app = create_application()
 
 @app.on_event("startup")
 async def startup() -> None:
+    # Auto-create MySQL database if it doesn't exist
+    db_url = settings.DATABASE_URL
+    if db_url.startswith("mysql"):
+        parsed = urlparse(db_url)
+        db_name = parsed.path.lstrip("/")
+        # Connect to MySQL server without specifying database
+        conn = pymysql.connect(
+            host=parsed.hostname,
+            port=parsed.port or 3306,
+            user=parsed.username or "root",
+            password=parsed.password or "",
+        )
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{db_name}`")
+            conn.commit()
+        finally:
+            conn.close()
+
     Base.metadata.create_all(bind=engine)
 
 
