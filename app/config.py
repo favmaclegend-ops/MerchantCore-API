@@ -28,5 +28,13 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_FROM_NAME: str = "Merchant Core API"
 
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        """Ensure correct driver is used for MySQL."""
+        url = self.DATABASE_URL
+        if url.startswith("mysql://") and "+pymysql" not in url:
+            return url.replace("mysql://", "mysql+pymysql://", 1)
+        return url
+
 
 settings = Settings()

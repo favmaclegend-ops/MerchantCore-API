@@ -13,8 +13,8 @@ from app.models import User  # noqa: F401 - registers models
 # access to the values within the .ini file in use.
 config = context.config
 
-# Set the database URL from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Set the database URL from settings (with correct driver)
+config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
