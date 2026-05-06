@@ -9,6 +9,8 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
+    username: str
+    full_name: str
     password: str
 
 
@@ -20,6 +22,8 @@ class UserUpdate(BaseModel):
 
 class UserResponse(UserBase):
     id: UUID
+    username: str
+    full_name: str
     is_active: bool
     is_verified: bool
     created_at: datetime

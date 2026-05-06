@@ -99,7 +99,7 @@ Once the server is running, access the interactive API documentation:
 ## API Endpoints
 
 ### Authentication (`/api/v1/auth`)
-- `POST /register` - Register a new user
+- `POST /register` - Register a new user (email, username, full_name, password)
 - `POST /login` - Login and get access token
 - `GET /verify-email?token=` - Verify email via link
 - `POST /verify-email` - Verify email with token

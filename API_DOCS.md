@@ -31,9 +31,16 @@ Registers a new user and sends a verification email.
 ```json
 {
   "email": "user@example.com",
+  "username": "johndoe",
+  "full_name": "John Doe",
   "password": "SecurePass123."
 }
 ```
+
+**Field Descriptions:**
+- `email` - Valid email address (must be unique)
+- `username` - Unique username identifier
+- `full_name` - User's full display name
 
 **Password Requirements:**
 - Minimum 8 characters
@@ -160,6 +167,8 @@ Authorization: Bearer <your-jwt-token>
 {
   "id": "uuid-string",
   "email": "user@example.com",
+  "username": "johndoe",
+  "full_name": "John Doe",
   "is_active": true,
   "is_verified": true,
   "created_at": "2026-05-05T22:00:00",
@@ -180,13 +189,13 @@ Authorization: Bearer <your-jwt-token>
 const API_BASE = 'https://merchantcore-api.onrender.com/api/v1';
 
 // Register
-async function register(email, password) {
+async function register(email, username, full_name, password) {
   const response = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, username, full_name, password }),
   });
   return response.json();
 }
@@ -247,8 +256,8 @@ const api = axios.create({
 });
 
 // Register
-async function register(email, password) {
-  return api.post('/auth/register', { email, password });
+async function register(email, username, full_name, password) {
+  return api.post('/auth/register', { email, username, full_name, password });
 }
 
 // Login
@@ -279,7 +288,7 @@ async function getProfile() {
 # Register
 curl -X POST "https://merchantcore-api.onrender.com/api/v1/auth/register" \
   -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com", "password": "SecurePass123."}'
+  -d '{"email": "user@example.com", "username": "johndoe", "full_name": "John Doe", "password": "SecurePass123."}'
 
 # Login
 curl -X POST "https://merchantcore-api.onrender.com/api/v1/auth/login" \

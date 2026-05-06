@@ -21,6 +21,8 @@ def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session
 
     user = User(
         email=user_in.email,
+        username=user_in.username,
+        full_name=user_in.full_name,
         hashed_password=get_password_hash(user_in.password),
         verification_token=token,
         is_verified=False,
