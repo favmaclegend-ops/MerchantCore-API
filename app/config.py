@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: list[str] = ["*"]
 
     SECRET_KEY: str = "change-me-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int =1440 
+    TOKEN_EXPIRE_MINUTES: int = 1440
 
     DEBUG: bool = False
 
