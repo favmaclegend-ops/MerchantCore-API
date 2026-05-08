@@ -48,3 +48,8 @@ class Message(BaseModel):
 
 class EmailVerification(BaseModel):
     token: str
+
+
+class EmailVerificationOTP(BaseModel):
+    email: EmailStr
+    otp: str

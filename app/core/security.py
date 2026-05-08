@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -6,6 +7,7 @@ from jose import JWTError, jwt
 from app.config import settings
 
 ALGORITHM = "HS256"
+OTP_EXPIRE_MINUTES = 15
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -28,3 +30,11 @@ def decode_access_token(token: str) -> str | None:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+def generate_otp() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def get_otp_expiry() -> datetime:
+    return datetime.now(UTC) + timedelta(minutes=OTP_EXPIRE_MINUTES)

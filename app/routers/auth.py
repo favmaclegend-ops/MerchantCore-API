@@ -1,10 +1,10 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token, decode_access_token, get_password_hash, verify_password
+from app.core.security import create_access_token, generate_otp, get_otp_expiry, get_password_hash, verify_password
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.user import EmailVerification, Message, Token, UserCreate, UserLogin
+from app.schemas.user import EmailVerificationOTP, Message, Token, UserCreate, UserLogin
 from app.services.email import send_verification_email
 from app.services.rate_limiter import can_send, record_send, remaining_seconds
 
@@ -17,23 +17,24 @@ def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    token = create_access_token(subject=user_in.email)
+    otp = generate_otp()
 
     user = User(
         email=user_in.email,
         username=user_in.username,
         full_name=user_in.full_name,
         hashed_password=get_password_hash(user_in.password),
-        verification_token=token,
+        verification_otp=otp,
+        verification_otp_expires_at=get_otp_expiry(),
         is_verified=False,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    background_tasks.add_task(send_verification_email, user_in.email, token)
+    background_tasks.add_task(send_verification_email, user_in.email, otp)
 
-    return {"message": "Registration successful. Please check your email to verify your account."}
+    return {"message": "Registration successful. Please check your email for the verification code."}
 
 
 @router.post("/login", response_model=Token)
@@ -45,7 +46,7 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
     if not user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email not verified. Please check your inbox.",
+            detail="Email not verified. Please check your inbox for the verification code.",
         )
 
     if not user.is_active:
@@ -56,40 +57,25 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/verify-email", response_model=Message)
-def verify_email(verification: EmailVerification, db: Session = Depends(get_db)) -> dict:
-    email = decode_access_token(verification.token)
-    if email is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired verification token")
+def verify_email(verification: EmailVerificationOTP, db: Session = Depends(get_db)) -> dict:
+    from datetime import UTC, datetime
 
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(User.email == verification.email).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     if user.is_verified:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already verified")
 
-    user.is_verified = True
-    user.verification_token = None
-    db.commit()
+    if not user.verification_otp or user.verification_otp != verification.otp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
 
-    return {"message": "Email verified successfully. You can now log in."}
-
-
-@router.get("/verify-email", response_model=Message)
-def verify_email_get(token: str, db: Session = Depends(get_db)) -> dict:
-    email = decode_access_token(token)
-    if email is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired verification token")
-
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    if user.is_verified:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already verified")
+    if not user.verification_otp_expires_at or user.verification_otp_expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code has expired")
 
     user.is_verified = True
-    user.verification_token = None
+    user.verification_otp = None
+    user.verification_otp_expires_at = None
     db.commit()
 
     return {"message": "Email verified successfully. You can now log in."}
@@ -108,14 +94,15 @@ def resend_verification(user_in: UserLogin, db: Session = Depends(get_db)) -> di
         remaining = remaining_seconds(user.email)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Please wait {remaining} seconds before requesting another verification email.",
+            detail=f"Please wait {remaining} seconds before requesting another verification code.",
         )
 
-    new_token = create_access_token(subject=user.email)
-    user.verification_token = new_token
+    new_otp = generate_otp()
+    user.verification_otp = new_otp
+    user.verification_otp_expires_at = get_otp_expiry()
     db.commit()
 
-    if not send_verification_email(user.email, new_token):
+    if not send_verification_email(user.email, new_otp):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send verification email",
@@ -123,4 +110,4 @@ def resend_verification(user_in: UserLogin, db: Session = Depends(get_db)) -> di
 
     record_send(user.email)
 
-    return {"message": "Verification email resent. Please check your inbox."}
+    return {"message": "Verification code resent. Please check your inbox."}

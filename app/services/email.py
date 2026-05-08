@@ -6,17 +6,16 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def send_verification_email(email: str, token: str) -> bool:
+def send_verification_email(email: str, otp: str) -> bool:
     logger.info(f"Sending verification email to {email}")
-    base_url = settings.PUBLIC_URL or "https://merchantcore-api.onrender.com"
-    verification_link = f"{base_url}/api/v1/auth/verify-email?token={token}"
     html_content = f"""\
 <html>
 <body>
 <p>Hi,</p>
-<p>Thank you for registering. Please click the link below to verify your email address:</p>
-<p><a href="{verification_link}">Verify Email</a></p>
-<p>This link will expire in {settings.TOKEN_EXPIRE_MINUTES} minutes.</p>
+<p>Thank you for registering. Your verification code is:</p>
+<h2 style="letter-spacing: 8px; font-size: 32px; text-align: center;">{otp}</h2>
+<p>Enter this code in the app to verify your email address.</p>
+<p>This code will expire in 15 minutes.</p>
 <p>If you did not create an account, please ignore this email.</p>
 </body>
 </html>
@@ -32,7 +31,7 @@ def send_verification_email(email: str, token: str) -> bool:
         response = resend.Emails.send({
             "from": f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>",
             "to": [email],
-            "subject": "Verify Your Email Address",
+            "subject": "Your Verification Code",
             "html": html_content,
         })
         logger.info(f"Email sent successfully to {email}: {response}")
