@@ -28,6 +28,11 @@ class SaleResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RevenuePoint(BaseModel):
+    month: str
+    revenue: float
+
+
 class DashboardStats(BaseModel):
     totalRevenue: float
     monthlyRevenue: float
@@ -35,3 +40,10 @@ class DashboardStats(BaseModel):
     activeCustomers: int
     lowStockAlerts: int
     inventoryValue: float
+    creditOutstanding: float = 0
+    avgTicket: float = 0
+    totalProducts: int = 0
+
+
+class RevenueTrend(BaseModel):
+    months: list[RevenuePoint]
