@@ -1,4 +1,4 @@
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,10 +19,12 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: list[str] = ["*"]
 
     SECRET_KEY: str = "change-me-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int =1440 
+    ACCESS_TOKEN_EXPIRE_MINUTES: int =1440
     TOKEN_EXPIRE_MINUTES: int = 1440
 
     DEBUG: bool = False
+
+    BCRYPT_ROUNDS: int = 10
 
     RESEND_API_KEY: str = ""
     SMTP_FROM_EMAIL: str = "onboarding@resend.dev"
@@ -37,7 +39,7 @@ class Settings(BaseSettings):
         # Replace mysql:// with mysql+pymysql:// if needed
         if url.startswith("mysql://") and "+pymysql" not in url:
             url = url.replace("mysql://", "mysql+pymysql://", 1)
-        
+
         # Strip unsupported query params like ssl-mode
         parsed = urlparse(url)
         if parsed.query:

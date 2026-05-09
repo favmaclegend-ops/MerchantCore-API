@@ -1,10 +1,10 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import urlparse
 
 import pymysql
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 from app.config import settings
-from app.db.session import Base, engine
 from app.models import User  # noqa: F401
 from app.routers import auth, users
 
@@ -37,31 +37,24 @@ app = create_application()
 
 @app.on_event("startup")
 async def startup() -> None:
-    # Auto-create MySQL database if it doesn't exist
     db_url = settings.DATABASE_URL
     if db_url.startswith("mysql"):
         parsed = urlparse(db_url)
         db_name = parsed.path.lstrip("/")
-        # Connect to MySQL server without specifying database
-        conn = pymysql.connect(
-            host=parsed.hostname,
-            port=parsed.port or 3306,
-            user=parsed.username or "root",
-            password=parsed.password or "",
-        )
         try:
+            conn = pymysql.connect(
+                host=parsed.hostname,
+                port=parsed.port or 3306,
+                user=parsed.username or "root",
+                password=parsed.password or "",
+                connect_timeout=5,
+            )
             with conn.cursor() as cursor:
                 cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{db_name}`")
             conn.commit()
-        finally:
             conn.close()
-
-    # Run Alembic migrations
-    from alembic import command
-    from alembic.config import Config
-
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+        except Exception:
+            pass
 
 
 @app.on_event("shutdown")

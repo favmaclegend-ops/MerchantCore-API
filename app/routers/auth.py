@@ -1,6 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.cache import user_cache, user_list_cache
 from app.core.security import create_access_token, generate_otp, get_otp_expiry, get_password_hash, verify_password
 from app.db.session import get_db
 from app.models.user import User
@@ -11,9 +12,20 @@ from app.services.rate_limiter import can_send, record_send, remaining_seconds
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _get_user_by_email(email: str, db: Session) -> User | None:
+    cache_key = f"user_email:{email}"
+    cached = user_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        user_cache[cache_key] = user
+    return user
+
+
 @router.post("/register", response_model=Message, status_code=status.HTTP_201_CREATED)
 def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
-    existing = db.query(User).filter(User.email == user_in.email).first()
+    existing = _get_user_by_email(user_in.email, db)
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
@@ -31,6 +43,9 @@ def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session
     db.add(user)
     db.commit()
     db.refresh(user)
+    user_cache[f"user_email:{user.email}"] = user
+    user_cache[f"user_id:{user.id}"] = user
+    user_list_cache.pop("all", None)
 
     background_tasks.add_task(send_verification_email, user_in.email, otp)
 
@@ -39,7 +54,7 @@ def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session
 
 @router.post("/login", response_model=Token)
 def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
-    user = db.query(User).filter(User.email == user_in.email).first()
+    user = _get_user_by_email(user_in.email, db)
     if not user or not verify_password(user_in.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
@@ -60,7 +75,7 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
 def verify_email(verification: EmailVerificationOTP, db: Session = Depends(get_db)) -> dict:
     from datetime import UTC, datetime
 
-    user = db.query(User).filter(User.email == verification.email).first()
+    user = _get_user_by_email(verification.email, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
@@ -77,13 +92,15 @@ def verify_email(verification: EmailVerificationOTP, db: Session = Depends(get_d
     user.verification_otp = None
     user.verification_otp_expires_at = None
     db.commit()
+    user_cache[f"user_email:{user.email}"] = user
+    user_cache[f"user_id:{user.id}"] = user
 
     return {"message": "Email verified successfully. You can now log in."}
 
 
 @router.post("/resend-verification", response_model=Message)
 def resend_verification(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
-    user = db.query(User).filter(User.email == user_in.email).first()
+    user = _get_user_by_email(user_in.email, db)
     if not user or not verify_password(user_in.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
@@ -101,6 +118,8 @@ def resend_verification(user_in: UserLogin, db: Session = Depends(get_db)) -> di
     user.verification_otp = new_otp
     user.verification_otp_expires_at = get_otp_expiry()
     db.commit()
+    user_cache[f"user_email:{user.email}"] = user
+    user_cache[f"user_id:{user.id}"] = user
 
     if not send_verification_email(user.email, new_otp):
         raise HTTPException(
