@@ -7,13 +7,17 @@ connect_args = {}
 db_url = settings.sqlalchemy_database_url
 if "aiven" in db_url.lower():
     connect_args["ssl"] = {}
+    connect_args["compress"] = True
+    connect_args["connect_timeout"] = 10
+    connect_args["read_timeout"] = 30
 
 engine = create_engine(
     db_url,
     pool_pre_ping=True,
-    pool_size=20,
-    max_overflow=10,
-    pool_recycle=3600,
+    pool_size=10,
+    max_overflow=5,
+    pool_recycle=1800,
+    pool_timeout=30,
     connect_args=connect_args,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

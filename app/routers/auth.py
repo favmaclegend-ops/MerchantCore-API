@@ -42,7 +42,6 @@ def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session
     )
     db.add(user)
     db.commit()
-    db.refresh(user)
     user_cache[f"user_email:{user.email}"] = user
     user_cache[f"user_id:{user.id}"] = user
     user_list_cache.pop("all", None)

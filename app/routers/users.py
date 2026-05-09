@@ -61,7 +61,6 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
     )
     db.add(user)
     db.commit()
-    db.refresh(user)
     user_cache[f"user_id:{user.id}"] = user
     user_cache[f"user_email:{user.email}"] = user
     user_list_cache.pop("all", None)
@@ -99,7 +98,6 @@ def update_user(user_id: str, user_in: UserUpdate, db: Session = Depends(get_db)
         setattr(user, field, value)
 
     db.commit()
-    db.refresh(user)
     user_cache[f"user_id:{user.id}"] = user
     user_cache[f"user_email:{user.email}"] = user
     user_list_cache.pop("all", None)
