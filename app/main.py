@@ -9,12 +9,13 @@ from app.db.session import Base, engine
 from app.models import (  # noqa: F401
     CreditEntry,
     Customer,
+    Notification,
     Product,
     Sale,
     Transaction,
     User,
 )
-from app.routers import auth, credit, customers, dashboard, pos, products, transactions, users
+from app.routers import auth, credit, customers, dashboard, notifications, pos, products, transactions, users
 
 
 def create_application() -> FastAPI:
@@ -42,6 +43,7 @@ def create_application() -> FastAPI:
     application.include_router(credit.router, prefix="/api/v1")
     application.include_router(pos.router, prefix="/api/v1")
     application.include_router(dashboard.router, prefix="/api/v1")
+    application.include_router(notifications.router, prefix="/api/v1")
 
     return application
 

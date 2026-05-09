@@ -9,6 +9,7 @@ from app.models.product import Product
 from app.models.sale import Sale
 from app.models.transaction import Transaction
 from app.schemas.sale import DashboardStats, SaleCreate, SaleResponse
+from app.services.notification import notify_low_stock, notify_new_sale
 
 router = APIRouter(tags=["pos"])
 
@@ -34,6 +35,7 @@ def checkout(sale_in: SaleCreate, db: Session = Depends(get_db)) -> Sale:
                 product.stock = 0
             elif product.stock < 10:
                 product.status = "low-stock"
+                notify_low_stock(db, product.name, product.id, product.stock)
 
     txn = Transaction(
         type="sale",
@@ -44,6 +46,8 @@ def checkout(sale_in: SaleCreate, db: Session = Depends(get_db)) -> Sale:
     )
     db.add(txn)
     db.commit()
+
+    notify_new_sale(db, sale_in.total, sale.id)
 
     sale_list_cache.pop("all", None)
     return sale

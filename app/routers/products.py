@@ -5,6 +5,7 @@ from app.core.cache import product_cache, product_list_cache
 from app.db.session import get_db
 from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
+from app.services.notification import notify_low_stock
 
 router = APIRouter(tags=["products"])
 
@@ -53,6 +54,13 @@ def update_product(product_id: str, product_in: ProductUpdate, db: Session = Dep
     for field, value in update_data.items():
         setattr(product, field, value)
     db.commit()
+
+    if "stock" in update_data and product.stock < 10 and product.stock > 0:
+        product.status = "low-stock"
+        notify_low_stock(db, product.name, product.id, product.stock)
+    elif "stock" in update_data and product.stock <= 0:
+        product.status = "out-of-stock"
+
     product_cache[f"id:{product.id}"] = product
     product_list_cache.pop("all", None)
     return product
