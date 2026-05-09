@@ -5,8 +5,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.models import User  # noqa: F401
-from app.routers import auth, users
+from app.db.session import Base, engine
+from app.models import (  # noqa: F401
+    CreditEntry,
+    Customer,
+    Product,
+    Sale,
+    Transaction,
+    User,
+)
+from app.routers import auth, credit, customers, dashboard, pos, products, transactions, users
 
 
 def create_application() -> FastAPI:
@@ -28,6 +36,12 @@ def create_application() -> FastAPI:
 
     application.include_router(auth.router, prefix="/api/v1")
     application.include_router(users.router, prefix="/api/v1")
+    application.include_router(products.router, prefix="/api/v1")
+    application.include_router(customers.router, prefix="/api/v1")
+    application.include_router(transactions.router, prefix="/api/v1")
+    application.include_router(credit.router, prefix="/api/v1")
+    application.include_router(pos.router, prefix="/api/v1")
+    application.include_router(dashboard.router, prefix="/api/v1")
 
     return application
 
@@ -55,6 +69,8 @@ async def startup() -> None:
             conn.close()
         except Exception:
             pass
+
+    Base.metadata.create_all(bind=engine)
 
 
 @app.on_event("shutdown")
