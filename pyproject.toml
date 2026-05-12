@@ -16,7 +16,7 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "pymysql>=1.1.0",
         "cachetools>=5.5.0",
-        "resend>=4.0.0",
+        "resend>=2.0.0",
 ]
 
 [project.optional-dependencies]
