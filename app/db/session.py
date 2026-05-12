@@ -7,7 +7,6 @@ connect_args = {}
 db_url = settings.sqlalchemy_database_url
 if "aiven" in db_url.lower():
     connect_args["ssl"] = {}
-    connect_args["compress"] = True
     connect_args["connect_timeout"] = 10
     connect_args["read_timeout"] = 30
 
