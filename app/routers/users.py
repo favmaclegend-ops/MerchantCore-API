@@ -1,34 +1,13 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.cache import user_cache, user_list_cache
-from app.core.security import decode_access_token, get_password_hash
+from app.core.security import get_current_user, get_password_hash
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 
 router = APIRouter(tags=["users"])
-
-
-def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication")
-
-    token = authorization.replace("Bearer ", "", 1)
-    email = decode_access_token(token)
-    if email is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
-
-    cache_key = f"user_email:{email}"
-    cached = user_cache.get(cache_key)
-    if cached is not None:
-        return cached
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    user_cache[cache_key] = user
-
-    return user
 
 
 @router.get("/users/me", response_model=UserResponse)

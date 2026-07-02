@@ -1,10 +1,11 @@
 from urllib.parse import urlparse
 
 import pymysql
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.core.security import get_current_user
 from app.db.session import Base, engine
 from app.models import (  # noqa: F401
     CreditEntry,
@@ -36,14 +37,17 @@ def create_application() -> FastAPI:
     )
 
     application.include_router(auth.router, prefix="/api/v1")
-    application.include_router(users.router, prefix="/api/v1")
-    application.include_router(products.router, prefix="/api/v1")
-    application.include_router(customers.router, prefix="/api/v1")
-    application.include_router(transactions.router, prefix="/api/v1")
-    application.include_router(credit.router, prefix="/api/v1")
-    application.include_router(pos.router, prefix="/api/v1")
-    application.include_router(dashboard.router, prefix="/api/v1")
-    application.include_router(notifications.router, prefix="/api/v1")
+
+    protected = APIRouter(dependencies=[Depends(get_current_user)])
+    protected.include_router(users.router)
+    protected.include_router(products.router)
+    protected.include_router(customers.router)
+    protected.include_router(transactions.router)
+    protected.include_router(credit.router)
+    protected.include_router(pos.router)
+    protected.include_router(dashboard.router)
+    protected.include_router(notifications.router)
+    application.include_router(protected, prefix="/api/v1")
 
     return application
 

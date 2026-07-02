@@ -2,9 +2,14 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
+from fastapi import Depends, Header, HTTPException, status
 from jose import JWTError, jwt
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.cache import user_cache
+from app.db.session import get_db
+from app.models.user import User
 
 ALGORITHM = "HS256"
 OTP_EXPIRE_MINUTES = 15
@@ -32,6 +37,27 @@ def decode_access_token(token: str) -> str | None:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication")
+
+    token = authorization.replace("Bearer ", "", 1)
+    email = decode_access_token(token)
+    if email is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    cache_key = f"user_email:{email}"
+    cached = user_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user_cache[cache_key] = user
+
+    return user
 
 
 def generate_otp() -> str:
