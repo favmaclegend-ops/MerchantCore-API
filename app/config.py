@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "Merchant Core API"
 
     PUBLIC_URL: str | None = None
+    FRONTEND_URL: str = "http://localhost:5173"
 
     @property
     def sqlalchemy_database_url(self) -> str:

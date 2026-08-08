@@ -29,7 +29,7 @@ def notify_new_sale(db: Session, amount: float, sale_id: str) -> Notification:
         type="new_sale",
         title="New Sale",
         message=f"A sale of ${amount:.2f} was completed.",
-        link=f"/home/pos",
+        link="/home/pos",
     )
 
 
@@ -39,7 +39,7 @@ def notify_low_stock(db: Session, product_name: str, product_id: str, stock: int
         type="low_stock",
         title="Low Stock Alert",
         message=f"{product_name} is running low ({stock} remaining). Restock suggested.",
-        link=f"/home/inventory",
+        link="/home/inventory",
     )
 
 
@@ -49,5 +49,5 @@ def notify_credit_payment(db: Session, customer_name: str, amount: float, entry_
         type="credit_payment",
         title="Payment Received",
         message=f"A payment of ${amount:.2f} was received from {customer_name}.",
-        link=f"/home/credit",
+        link="/home/credit",
     )
