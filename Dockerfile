@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock* ./
 RUN pip install --no-cache-dir uv && \
-    uv export --no-dev --no-hashes -o requirements.txt
+    uv export --no-dev --no-hashes --no-emit-project -o requirements.txt
 
 FROM python:3.14-slim
 
