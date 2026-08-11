@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     BCRYPT_ROUNDS: int = 10
 
     RESEND_API_KEY: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = "onboarding@resend.dev"
     SMTP_FROM_NAME: str = "Merchant Core API"
 

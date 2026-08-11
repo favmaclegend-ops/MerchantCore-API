@@ -1,40 +1,70 @@
 import logging
 
-import resend
+import yagmail
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-def send_email(to_email: str, subject: str, html: str) -> bool:
-    """Send an email through Resend. Returns False when the API key is missing.
-
-    In development (no ``RESEND_API_KEY``) the message — including any OTP code — is
-    printed to the server console so the verify flow stays usable without an email service.
-    """
-    if not settings.RESEND_API_KEY:
-        logger.error("RESEND_API_KEY not set")
-        print(f"[dev-email] To: {to_email} | Subject: {subject}\n{html}", flush=True)
-        return False
-
-    resend.api_key = settings.RESEND_API_KEY
+def _send_via_smtp(to_email: str, subject: str, html: str) -> bool:
+    """Send through SMTP (e.g. Gmail app password) using yagmail."""
     try:
-        response = resend.Emails.send({
-            "from": f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>",
-            "to": [to_email],
-            "subject": subject,
-            "html": html,
-        })
-        logger.info(f"Email sent successfully to {to_email}: {response}")
+        yag = yagmail.SMTP(
+            user=settings.SMTP_USER,
+            password=settings.SMTP_PASSWORD,
+            host=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            smtp_starttls=True,
+            smtp_ssl=False,
+        )
+        yag.send(
+            to=to_email,
+            subject=subject,
+            contents=html,
+            headers={"From": f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"},
+        )
+        logger.info("Email sent successfully to %s via SMTP", to_email)
         return True
     except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
+        logger.error("Failed to send email to %s via SMTP: %s", to_email, e)
         return False
+
+
+def send_email(to_email: str, subject: str, html: str) -> bool:
+    """Send an email. Uses SMTP (yagmail) when configured, else Resend, else logs to console.
+
+    In development (no SMTP credentials and no ``RESEND_API_KEY``) the message —
+    including any OTP code — is printed to the server console so the verify flow
+    stays usable without an email service.
+    """
+    if settings.SMTP_USER and settings.SMTP_PASSWORD:
+        return _send_via_smtp(to_email, subject, html)
+
+    if settings.RESEND_API_KEY:
+        try:
+            import resend
+
+            resend.api_key = settings.RESEND_API_KEY
+            response = resend.Emails.send({
+                "from": f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html,
+            })
+            logger.info("Email sent successfully to %s via Resend: %s", to_email, response)
+            return True
+        except Exception as e:
+            logger.error("Failed to send email to %s via Resend: %s", to_email, e)
+            return False
+
+    logger.error("No SMTP or RESEND_API_KEY configured")
+    print(f"[dev-email] To: {to_email} | Subject: {subject}\n{html}", flush=True)
+    return False
 
 
 def send_verification_email(email: str, otp: str) -> bool:
-    logger.info(f"Sending verification email to {email}")
+    logger.info("Sending verification email to %s", email)
     html_content = f"""\
 <html>
 <body>
