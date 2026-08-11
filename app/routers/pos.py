@@ -8,7 +8,7 @@ from app.db.session import get_db
 from app.models.product import Product
 from app.models.sale import Sale
 from app.models.transaction import Transaction
-from app.schemas.sale import DashboardStats, SaleCreate, SaleResponse
+from app.schemas.sale import SaleCreate, SaleResponse
 from app.services.notification import notify_low_stock, notify_new_sale
 
 router = APIRouter(tags=["pos"])

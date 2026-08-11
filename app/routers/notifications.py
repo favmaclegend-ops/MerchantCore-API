@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.cache import notification_list_cache
 from app.db.session import get_db
 from app.models.notification import Notification
-from app.schemas.notification import NotificationResponse, NotificationUpdate, UnreadCountResponse
+from app.schemas.notification import NotificationResponse, UnreadCountResponse
 
 router = APIRouter(tags=["notifications"])
 

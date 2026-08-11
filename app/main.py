@@ -11,12 +11,44 @@ from app.models import (  # noqa: F401
     CreditEntry,
     Customer,
     Notification,
+    Organisation,
+    OrgAttendance,
+    OrgBenefit,
+    OrgCreditEntry,
+    OrgCustomer,
+    OrgEmployee,
+    OrgInvoice,
+    OrgLedgerEntry,
+    OrgMember,
+    OrgNotification,
+    OrgNotificationSetting,
+    OrgPayrollRun,
+    OrgPosTransaction,
+    OrgProduct,
+    OrgPurchaseOrder,
+    OrgReview,
+    OrgShipment,
+    OrgSupplier,
+    OrgTaxItem,
+    OrgTimeEntry,
     Product,
     Sale,
     Transaction,
     User,
 )
-from app.routers import auth, credit, customers, dashboard, notifications, pos, products, transactions, users
+from app.routers import (
+    auth,
+    credit,
+    customers,
+    dashboard,
+    notifications,
+    org,
+    org_auth,
+    pos,
+    products,
+    transactions,
+    users,
+)
 
 
 def create_application() -> FastAPI:
@@ -37,6 +69,7 @@ def create_application() -> FastAPI:
     )
 
     application.include_router(auth.router, prefix="/api/v1")
+    application.include_router(org_auth.router, prefix="/api/v1")
 
     protected = APIRouter(dependencies=[Depends(get_current_user)])
     protected.include_router(users.router)
@@ -48,6 +81,8 @@ def create_application() -> FastAPI:
     protected.include_router(dashboard.router)
     protected.include_router(notifications.router)
     application.include_router(protected, prefix="/api/v1")
+
+    application.include_router(org.router, prefix="/api/v1")
 
     return application
 
