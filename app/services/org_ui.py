@@ -1546,15 +1546,16 @@ def org_dashboard(db: Session, org: Organisation, member: OrgMember) -> dict:
     )
     credit = db.query(OrgCreditEntry).filter(OrgCreditEntry.org_id == org.id).all()
     notifications = db.query(OrgNotification).filter(OrgNotification.org_id == org.id).count()
-
-    revenue = round(sum(t.amount for t in sales if t.status == "completed"), 2)
+    a = sum(t.amount for t in sales if t.status == "completed")
+    revenue = round(a, 2)
     pending_payroll = (
         db.query(OrgPayrollRun).filter(OrgPayrollRun.org_id == org.id, OrgPayrollRun.status == "pending").count()
     )
 
     # Last 30 days revenue trend, bucketed by day.
     cutoff = datetime.now(UTC) - timedelta(days=30)
-    recent = [t for t in sales if t.created_at and t.created_at >= cutoff and t.status == "completed"]
+    
+    recent = [t for t in sales if t.created_at and t.created_at == cutoff and t.status == "completed"]
     buckets: dict[str, float] = {}
     for t in recent:
         day = t.created_at.date().isoformat()

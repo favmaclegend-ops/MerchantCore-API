@@ -6,10 +6,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.core.security import get_current_user
+from app.db.market_session import MarketBase, market_engine
 from app.db.session import Base, engine
 from app.models import (  # noqa: F401
     CreditEntry,
     Customer,
+    MarketAdvert,
+    MarketCategory,
+    MarketProduct,
+    MarketProductImage,
+    MarketProductVariant,
+    MarketShop,
     Notification,
     Organisation,
     OrgAttendance,
@@ -41,6 +48,7 @@ from app.routers import (
     credit,
     customers,
     dashboard,
+    market,
     notifications,
     org,
     org_auth,
@@ -84,6 +92,8 @@ def create_application() -> FastAPI:
 
     application.include_router(org.router, prefix="/api/v1")
 
+    application.include_router(market.router, prefix="/api/v1")
+
     return application
 
 
@@ -112,6 +122,27 @@ async def startup() -> None:
             pass
 
     Base.metadata.create_all(bind=engine)
+
+    market_db_url = settings.MARKET_DATABASE_URL
+    if market_db_url.startswith("mysql"):
+        parsed = urlparse(market_db_url)
+        market_db_name = parsed.path.lstrip("/")
+        try:
+            conn = pymysql.connect(
+                host=parsed.hostname,
+                port=parsed.port or 3306,
+                user=parsed.username or "root",
+                password=parsed.password or "",
+                connect_timeout=5,
+            )
+            with conn.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{market_db_name}`")
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    MarketBase.metadata.create_all(bind=market_engine)
 
 
 @app.on_event("shutdown")

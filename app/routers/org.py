@@ -96,10 +96,11 @@ def add_member(
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     db, member = _member(org, db, member)
+    print(member)
     email = (body.get("email") or "").strip()
     if not email or "@" not in email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email is required")
-    return org_admin.add_member(db, org, member, email, body.get("role", "staff"), body.get("jobTitle"))
+    return org_admin.add_member(db, org, member, email, body.get("role", "staff"), body.get("jobTitle"), body.get("password"))
 
 
 @router.patch("/{org_id}/members/{member_id}/role", response_model=dict)
@@ -114,6 +115,8 @@ def change_member_role(
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     db, member = _member(org, db, member)
+    print(member)
+    
     return org_admin.update_member_role(db, org, member, member_id, body.get("role", "staff"))
 
 
@@ -129,6 +132,7 @@ def update_member_profile(
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     db, member = _member(org, db, member)
+
     return org_admin.update_member_profile(
         db,
         org,
@@ -139,6 +143,7 @@ def update_member_profile(
         username=body.get("username"),
         phone=body.get("phone"),
         job_title=body.get("jobTitle"),
+        password=body.get("password"),
     )
 
 

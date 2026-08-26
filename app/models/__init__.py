@@ -1,5 +1,13 @@
 from app.models.credit_entry import CreditEntry  # noqa: F401
 from app.models.customer import Customer  # noqa: F401
+from app.models.market import (  # noqa: F401
+    MarketAdvert,
+    MarketCategory,
+    MarketProduct,
+    MarketProductImage,
+    MarketProductVariant,
+    MarketShop,
+)
 from app.models.notification import Notification  # noqa: F401
 from app.models.org_commerce import (  # noqa: F401
     OrgCreditEntry,

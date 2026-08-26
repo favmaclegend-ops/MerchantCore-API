@@ -125,6 +125,7 @@ def verify_organisation(db: Session, org: Organisation, code: str) -> dict:
 def login_organisation(db: Session, email: str, password: str) -> dict:
     member = db.query(OrgMember).filter(OrgMember.email == email).first()
     if not member:
+        print('No Member')
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
     if member.disabled:
@@ -136,14 +137,17 @@ def login_organisation(db: Session, email: str, password: str) -> dict:
             status_code=status.HTTP_403_FORBIDDEN, detail="Your account has been blocked. Contact your administrator."
         )
     if not verify_password(password, member.hashed_password):
+          
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
     org = db.query(Organisation).filter(Organisation.id == member.org_id).first()
-    if not org or not org.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your organisation has not been verified. Check your inbox for the verification code.",
-        )
+    
+    #######################REQUIRED################################################
+    # if not org or not org.is_verified:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="Your organisation has not been verified. Check your inbox for the verification code.",
+    #     )
 
     token = create_access_token(subject=member.id, claims={"typ": "member", "org_id": member.org_id})
     return {
@@ -162,7 +166,7 @@ def login_organisation(db: Session, email: str, password: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Invites
 # --------------------------------------------------------------------------- #
-def invite_member(db: Session, org: Organisation, email: str, role: str, job_title: str | None) -> OrgMember:
+def invite_member(db: Session, org: Organisation, email: str, role: str, job_title: str | None, password: str | None = None) -> OrgMember:
     if email.lower() == org.business_email.lower():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="That is the owner email and cannot be invited as a member"
@@ -172,7 +176,7 @@ def invite_member(db: Session, org: Organisation, email: str, role: str, job_tit
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A member with this email already exists")
 
-    temp_password = generate_otp() + generate_otp()  # 12-char placeholder, owner sets the real one
+    raw_password = password if password else generate_otp() + generate_otp()
     member = OrgMember(
         org_id=org.id,
         email=email.lower(),
@@ -180,7 +184,7 @@ def invite_member(db: Session, org: Organisation, email: str, role: str, job_tit
         full_name=email.lower().split("@")[0],
         role=role,
         job_title=job_title,
-        hashed_password=get_password_hash(temp_password),
+        hashed_password=get_password_hash(raw_password),
         is_verified=False,
     )
     db.add(member)

@@ -16,11 +16,12 @@ class Settings(BaseSettings):
     DESCRIPTION: str = "Merchant Core API Service"
 
     DATABASE_URL: str = "sqlite:///./app.db"
+    MARKET_DATABASE_URL: str = "sqlite:///./market.db"
     ALLOWED_HOSTS: list[str] = ["*"]
 
     SECRET_KEY: str = "change-me-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int =1440
-    TOKEN_EXPIRE_MINUTES: int = 1440
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
+    TOKEN_EXPIRE_MINUTES: int = 10080
 
     DEBUG: bool = False
 
@@ -41,11 +42,25 @@ class Settings(BaseSettings):
     def sqlalchemy_database_url(self) -> str:
         """Ensure correct driver and clean query params for MySQL."""
         url = self.DATABASE_URL
-        # Replace mysql:// with mysql+pymysql:// if needed
         if url.startswith("mysql://") and "+pymysql" not in url:
             url = url.replace("mysql://", "mysql+pymysql://", 1)
+        parsed = urlparse(url)
+        if parsed.query:
+            query_params = parse_qs(parsed.query)
+            query_params.pop("ssl-mode", None)
+            new_query = urlencode(query_params, doseq=True)
+            url = urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, new_query, parsed.fragment
+            ))
+        return url
 
-        # Strip unsupported query params like ssl-mode
+    @property
+    def sqlalchemy_market_database_url(self) -> str:
+        """Ensure correct driver and clean query params for the market database."""
+        url = self.MARKET_DATABASE_URL
+        if url.startswith("mysql://") and "+pymysql" not in url:
+            url = url.replace("mysql://", "mysql+pymysql://", 1)
         parsed = urlparse(url)
         if parsed.query:
             query_params = parse_qs(parsed.query)

@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.permissions import require_manager, require_owner
+from app.core.security import get_password_hash
 from app.models.organisation import Organisation, OrgMember
 from app.services.org_user import invite_member
 
@@ -99,12 +100,12 @@ def list_members(
 
 
 def add_member(
-    db: Session, org: Organisation, member: OrgMember, email: str, role: str, job_title: str | None
+    db: Session, org: Organisation, member: OrgMember, email: str, role: str, job_title: str | None, password: str | None = None
 ) -> dict[str, Any]:
     require_manager(member)
     if role not in ASSIGNABLE_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
-    created = invite_member(db, org, email, role, job_title)
+    created = invite_member(db, org, email, role, job_title, password)
     return created.as_api
 
 
@@ -119,8 +120,9 @@ def update_member_profile(
     username: str | None = None,
     phone: str | None = None,
     job_title: str | None = None,
+    password: str | None = None,
 ) -> dict[str, Any]:
-    """Edit a member's profile fields (never the password or the role)."""
+    """Edit a member's profile fields (never the role)."""
     require_manager(member)
     target = db.query(OrgMember).filter(OrgMember.id == target_id, OrgMember.org_id == org.id).first()
     if not target:
@@ -153,6 +155,8 @@ def update_member_profile(
         target.phone = phone
     if job_title is not None:
         target.job_title = job_title
+    if password:
+        target.hashed_password = get_password_hash(password)
     db.commit()
     db.refresh(target)
     return target.as_api
