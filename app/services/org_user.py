@@ -124,6 +124,14 @@ def verify_organisation(db: Session, org: Organisation, code: str) -> dict:
 # --------------------------------------------------------------------------- #
 def login_organisation(db: Session, email: str, password: str) -> dict:
     member = db.query(OrgMember).filter(OrgMember.email == email).first()
+
+    if not member:
+        org = db.query(Organisation).filter(Organisation.business_email == email).first()
+        if org:
+            member = db.query(OrgMember).filter(
+                OrgMember.org_id == org.id, OrgMember.role == "super-admin"
+            ).first()
+
     if not member:
         print('No Member')
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")

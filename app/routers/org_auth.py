@@ -30,6 +30,14 @@ def _get_org_by_email(email: str, db: Session) -> Organisation | None:
     return db.query(Organisation).filter(Organisation.business_email == email.lower()).first()
 
 
+def _get_org_by_member_email(email: str, db: Session) -> Organisation | None:
+    """Look up an org via a member's email (e.g. super admin personal email)."""
+    member = db.query(OrgMember).filter(OrgMember.email == email.lower()).first()
+    if not member:
+        return None
+    return db.query(Organisation).filter(Organisation.id == member.org_id).first()
+
+
 def _get_member_by_email(email: str, db: Session) -> OrgMember | None:
     return db.query(OrgMember).filter(OrgMember.email == email.lower()).first()
 
@@ -55,6 +63,7 @@ def register_org(
 ) -> dict:
     name = (body.get("name") or "").strip()
     business_email = (body.get("business_email") or body.get("businessEmail") or "").strip().lower()
+    super_admin_email = (body.get("super_admin_email") or body.get("superAdminEmail") or "").strip().lower()
     username = (body.get("username") or "").strip()
     full_name = (body.get("full_name") or body.get("fullName") or "").strip()
     password = body.get("password") or ""
@@ -64,6 +73,9 @@ def register_org(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Name, business email, full name and a password of at least 8 characters are required",
         )
+
+    if not super_admin_email:
+        super_admin_email = business_email
 
     if _get_org_by_email(business_email, db):
         raise HTTPException(
@@ -83,8 +95,8 @@ def register_org(
 
     member = OrgMember(
         org_id=org.id,
-        email=business_email,
-        username=username or business_email.split("@")[0],
+        email=super_admin_email,
+        username=username or super_admin_email.split("@")[0],
         full_name=full_name,
         role="super-admin",
         job_title="Owner",
@@ -95,7 +107,7 @@ def register_org(
     db.commit()
     db.refresh(org)
 
-    background_tasks.add_task(_send_code_email, business_email, code, name)
+    background_tasks.add_task(_send_code_email, super_admin_email, code, name)
     return {
         "message": "Organisation registered. Check your email for the verification code.",
         "org_id": org.id,
@@ -107,7 +119,7 @@ def verify_org_email(body: dict, db: Session = Depends(get_db)) -> dict:
     email = (body.get("email") or "").strip().lower()
     code = body.get("otp") or body.get("code") or ""
 
-    org = _get_org_by_email(email, db)
+    org = _get_org_by_member_email(email, db) or _get_org_by_email(email, db)
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     if org.is_verified:
@@ -140,7 +152,7 @@ def verify_org_email(body: dict, db: Session = Depends(get_db)) -> dict:
 @router.post("/resend-verification", response_model=dict)
 def resend_org_code(body: dict, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
     email = (body.get("email") or "").strip().lower()
-    org = _get_org_by_email(email, db)
+    org = _get_org_by_member_email(email, db) or _get_org_by_email(email, db)
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     if org.is_verified:
