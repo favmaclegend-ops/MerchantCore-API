@@ -14,7 +14,7 @@ from app.models.base import BaseMixin, TimestampMixin
 class MarketShop(MarketBase, BaseMixin, TimestampMixin):
     __tablename__ = "market_shops"
 
-    owner_id = Column(String(36), nullable=False, index=True)
+    owner_id = Column(String(50), nullable=False, index=True)
     shop_name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     profile_image = Column(String(1000), nullable=True)
