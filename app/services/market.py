@@ -156,8 +156,23 @@ def list_categories(db: Session) -> list[dict[str, Any]]:
     return [_category_api(c) for c in cats]
 
 
+MIN_SHOPS_FOR_TOP_RATED = 10
+MIN_RATING_FOR_TOP_RATED = 1000
+
+
 def top_rated_shops(db: Session, limit: int = 4) -> list[dict[str, Any]]:
-    shops = db.query(MarketShop).order_by(MarketShop.rating.desc()).limit(limit).all()
+    total_shops = db.query(func.count(MarketShop.id)).scalar() or 0
+    if total_shops < MIN_SHOPS_FOR_TOP_RATED:
+        return []
+    shops = (
+        db.query(MarketShop)
+        .filter(MarketShop.rating >= MIN_RATING_FOR_TOP_RATED)
+        .order_by(MarketShop.rating.desc())
+        .limit(limit)
+        .all()
+    )
+    if len(shops) < limit:
+        return []
     return [_shop_api(s) for s in shops]
 
 

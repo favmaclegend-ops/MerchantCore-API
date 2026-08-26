@@ -141,13 +141,12 @@ def login_organisation(db: Session, email: str, password: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
     org = db.query(Organisation).filter(Organisation.id == member.org_id).first()
-    
-    #######################REQUIRED################################################
-    # if not org or not org.is_verified:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_403_FORBIDDEN,
-    #         detail="Your organisation has not been verified. Check your inbox for the verification code.",
-    #     )
+
+    if not org or not org.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your organisation has not been verified. Check your inbox for the verification code.",
+        )
 
     token = create_access_token(subject=member.id, claims={"typ": "member", "org_id": member.org_id})
     return {
