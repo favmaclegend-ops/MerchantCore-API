@@ -157,8 +157,14 @@ def resend_org_code(body: dict, background_tasks: BackgroundTasks, db: Session =
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     if org.is_verified:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Organisation is already verified")
-    if not can_send(f"org:{email}"):
-        remaining = remaining_seconds(f"org:{email}")
+
+    admin_member = db.query(OrgMember).filter(
+        OrgMember.org_id == org.id, OrgMember.role == "super-admin"
+    ).first()
+    admin_email = admin_member.email if admin_member else email
+
+    if not can_send(f"org:{org.id}"):
+        remaining = remaining_seconds(f"org:{org.id}")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Please wait {remaining} seconds before requesting another verification code.",
@@ -170,8 +176,8 @@ def resend_org_code(body: dict, background_tasks: BackgroundTasks, db: Session =
     org.otp_attempts = 0
     db.commit()
 
-    background_tasks.add_task(_send_code_email, email, code, org.name)
-    record_send(f"org:{email}")
+    background_tasks.add_task(_send_code_email, admin_email, code, org.name)
+    record_send(f"org:{org.id}")
     return {"message": "Verification code resent. Please check your inbox."}
 
 
