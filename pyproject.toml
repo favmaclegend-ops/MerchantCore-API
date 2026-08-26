@@ -21,6 +21,7 @@ dependencies = [
     "bcrypt>=4.0.0",
     "alembic>=1.14.0",
     "python-jose[cryptography]>=3.3.0",
+    "psycopg2-binary>=2.9.9",
     "pymysql>=1.1.0",
         "cachetools>=5.5.0",
         "resend>=2.0.0",
