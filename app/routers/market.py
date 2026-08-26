@@ -75,9 +75,14 @@ def top_rated_shops(db: MarketDb, limit: int = Query(4, ge=1, le=10)) -> list[di
 # Authenticated endpoints (shop owner actions)
 # ---------------------------------------------------------------------------
 
+def _owner_key(member: OrgMember) -> str:
+    """Build the cross-platform owner key used to identify shop ownership."""
+    return f"org:{member.org_id}"
+
+
 @router.post("/shops")
 def create_shop(body: Annotated[dict, Body()], db: MarketDb, member: MemberDep) -> dict:
-    return market.create_shop(db, owner_id=member.id, data=body)
+    return market.create_shop(db, owner_id=_owner_key(member), data=body)
 
 
 @router.patch("/shops/{shop_id}")
@@ -87,7 +92,7 @@ def update_shop(
     db: MarketDb,
     member: MemberDep,
 ) -> dict:
-    return market.update_shop(db, shop_id=shop_id, owner_id=member.id, data=body)
+    return market.update_shop(db, shop_id=shop_id, owner_id=_owner_key(member), data=body)
 
 
 @router.post("/shops/{shop_id}/products")
@@ -97,7 +102,7 @@ def create_product(
     db: MarketDb,
     member: MemberDep,
 ) -> dict:
-    return market.create_product(db, shop_id=shop_id, owner_id=member.id, data=body)
+    return market.create_product(db, shop_id=shop_id, owner_id=_owner_key(member), data=body)
 
 
 @router.patch("/products/{product_id}")
@@ -107,10 +112,10 @@ def update_product(
     db: MarketDb,
     member: MemberDep,
 ) -> dict:
-    return market.update_product(db, product_id=product_id, owner_id=member.id, data=body)
+    return market.update_product(db, product_id=product_id, owner_id=_owner_key(member), data=body)
 
 
 @router.delete("/products/{product_id}")
 def delete_product(product_id: str, db: MarketDb, member: MemberDep) -> dict:
-    market.delete_product(db, product_id=product_id, owner_id=member.id)
+    market.delete_product(db, product_id=product_id, owner_id=_owner_key(member))
     return {"message": "Product deleted"}
