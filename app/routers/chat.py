@@ -158,11 +158,19 @@ def send_message(
     body: Annotated[dict, Body()],
     db: ChatDb,
     app_db: AppDb,
+
     authorization: str = Header(...),
 ) -> dict:
     actor = get_chat_actor(authorization, app_db)
     text = (body.get("text") or "").strip()
+    message_type= (body.get("message-type") or "").strip()
+    message_image_url = (body.get("message-img-url") or "").strip()
+    product_id = (body.get("product-id") or "").strip()
+    old_price = (body.get("old-price") or "").strip()
+    new_price = (body.get("new-price") or "").strip()
+    discount_link = (body.get("discount-link") or "").strip()
     thread_key = (body.get("thread_key") or "").strip()
+
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message text is required")
     if not thread_key:
@@ -174,6 +182,12 @@ def send_message(
         sender_key=actor.participant_key,
         thread_key_b64=thread_key,
         plaintext=text,
+        message_image_url=message_image_url,
+        message_type=message_type,
+        product_id=product_id,
+        old_price=old_price,
+        new_price=new_price,
+        discount_link=discount_link
     )
     return {"message": message}
 

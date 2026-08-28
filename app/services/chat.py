@@ -28,8 +28,14 @@ def _message_api(m: ChatMessage) -> dict[str, Any]:
         "thread_id": m.thread_id,
         "sender_key": m.sender_key,
         "ciphertext": m.ciphertext,
+        "message_type": m.message_type,
+        "message_image_url": m.message_image_url,
+        "product_id": m.product_id,
+        "old_price": m.old_price,
+        "new_price": m.new_price,
+        "discount_link": m.discount_link,
         "iv": m.iv,
-        "sent_at": m.sent_at.isoformat() if m.sent_at else None,
+        "sent_at": m.sent_at.isoformat() if m.sent_at else None, # type: ignore
     }
 
 
@@ -44,7 +50,7 @@ def _thread_api(t: ChatThread) -> dict[str, Any]:
         "shop_image": t.shop_image,
         "thread_key_wrapped_buyer": t.thread_key_wrapped_buyer,
         "thread_key_wrapped_owner": t.thread_key_wrapped_owner,
-        "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None,
+        "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None, # type: ignore
         "unread_buyer": t.unread_buyer,
         "unread_owner": t.unread_owner,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -128,6 +134,12 @@ def send_encrypted_message(
     sender_key: str,
     thread_key_b64: str,
     plaintext: str,
+    message_type: str = "normal",
+    message_image_url: str = "",
+    product_id: str = "",
+    old_price: str = "",
+    new_price: str = "",
+    discount_link: str = "",
 ) -> dict[str, Any]:
     """Store a message encrypted with the supplied shared thread key.
 
@@ -146,6 +158,12 @@ def send_encrypted_message(
     now = datetime.now(UTC)
     message = ChatMessage(
         thread_id=thread_id,
+        message_type=message_type,
+        message_image_url=message_image_url,
+        product_id=product_id,
+        old_price=old_price,
+        new_price=new_price,
+        discount_link=discount_link,
         sender_key=sender_key,
         ciphertext=ciphertext,
         iv=iv,

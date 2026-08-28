@@ -42,6 +42,7 @@ class ChatThread(ChatBase, BaseMixin, TimestampMixin):
     shop_id = Column(String(36), index=True, nullable=False)
     shop_name = Column(String(255), nullable=False)
     shop_image = Column(String(1000), nullable=True)
+
     owner_key = Column(String(120), index=True, nullable=False)
 
     # The symmetric thread key, wrapped under each participant's public key.
@@ -67,7 +68,15 @@ class ChatMessage(ChatBase, BaseMixin):
 
     thread_id = Column(String(36), ForeignKey("chat_threads.id"), nullable=False, index=True)
     sender_key = Column(String(120), nullable=False)
+    message_type = Column(String(20), nullable=True, default="normal")
+    message_image_url = Column(String(120), nullable=True)
 
+    ## Discount message
+
+    product_id = Column(String(120), nullable=True, default="")
+    old_price = Column(String(120), nullable=True, default="")
+    new_price = Column(String(120), nullable=True, default="")
+    discount_link = Column(String(120), nullable=True, default="")
     # Encrypted with the thread's symmetric key (AES-256-GCM).
     ciphertext = Column(Text, nullable=False)
     iv = Column(String(64), nullable=False)
