@@ -55,6 +55,7 @@ def _product_api(p: MarketProduct) -> dict[str, Any]:
     return {
         "id": p.id,
         "shop_id": p.shop_id,
+        "source_id": p.source_id,
         "name": p.name,
         "price": p.price,
         "category": p.category,
@@ -218,8 +219,26 @@ def create_product(db: Session, shop_id: str, owner_id: str, data: dict[str, Any
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
     if shop.owner_id != owner_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the shop owner can add products")
+
+    source_id = data.get("source_id")
+    if source_id:
+        duplicate = (
+            db.query(MarketProduct)
+            .filter(
+                MarketProduct.shop_id == shop_id,
+                MarketProduct.source_id == source_id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This item is already uploaded to your shop",
+            )
+
     product = MarketProduct(
         shop_id=shop_id,
+        source_id=source_id,
         name=data["name"],
         price=data.get("price", 0),
         category=data.get("category", "General"),

@@ -4,7 +4,7 @@ These models use ``MarketBase`` (not the main ``Base``) so they live in an
 isolated database that any client platform can consume via the public API.
 """
 
-from sqlalchemy import Column, Float, ForeignKey, Integer, String, Text, Boolean
+from sqlalchemy import Column, Float, ForeignKey, Integer, String, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.db.market_session import MarketBase
@@ -31,8 +31,16 @@ class MarketShop(MarketBase, BaseMixin, TimestampMixin):
 
 class MarketProduct(MarketBase, BaseMixin, TimestampMixin):
     __tablename__ = "market_products"
+    __table_args__ = (
+        UniqueConstraint(
+            "shop_id",
+            "source_id",
+            name="uq_market_product_source",
+        ),
+    )
 
     shop_id = Column(String(36), ForeignKey("market_shops.id"), nullable=False, index=True)
+    source_id = Column(String(255), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     price = Column(Float, nullable=False, default=0)
     category = Column(String(100), nullable=False, default="General")

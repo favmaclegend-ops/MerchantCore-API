@@ -79,12 +79,12 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
     if not user or not verify_password(user_in.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
-    # FOR production only
-    if not user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email not verified. Please check your inbox for the verification code.",
-        )
+    # # FOR production only
+    # if not user.is_verified:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="Email not verified. Please check your inbox for the verification code.",
+    #     )
 
     if not user.is_active: # type:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
