@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite:///./app.db"
     MARKET_DATABASE_URL: str = "sqlite:///./market.db"
+    CHAT_DATABASE_URL: str = "sqlite:///./chat.db"
     ALLOWED_HOSTS: list[str] = ["*"]
 
     SECRET_KEY: str = "change-me-in-production"
@@ -39,38 +40,35 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "https://merchantcore.netlify.app"
 
     @property
+    def sqlalchemy_chat_database_url(self) -> str:
+        """Ensure correct driver and clean query params for the chat database."""
+        return clean_sqlalchemy_url(self.CHAT_DATABASE_URL)
+
+    @property
     def sqlalchemy_database_url(self) -> str:
         """Ensure correct driver and clean query params for MySQL."""
-        url = self.DATABASE_URL
-        if url.startswith("mysql://") and "+pymysql" not in url:
-            url = url.replace("mysql://", "mysql+pymysql://", 1)
-        parsed = urlparse(url)
-        if parsed.query:
-            query_params = parse_qs(parsed.query)
-            query_params.pop("ssl-mode", None)
-            new_query = urlencode(query_params, doseq=True)
-            url = urlunparse((
-                parsed.scheme, parsed.netloc, parsed.path,
-                parsed.params, new_query, parsed.fragment
-            ))
-        return url
+        return clean_sqlalchemy_url(self.DATABASE_URL)
 
     @property
     def sqlalchemy_market_database_url(self) -> str:
         """Ensure correct driver and clean query params for the market database."""
-        url = self.MARKET_DATABASE_URL
-        if url.startswith("mysql://") and "+pymysql" not in url:
-            url = url.replace("mysql://", "mysql+pymysql://", 1)
-        parsed = urlparse(url)
-        if parsed.query:
-            query_params = parse_qs(parsed.query)
-            query_params.pop("ssl-mode", None)
-            new_query = urlencode(query_params, doseq=True)
-            url = urlunparse((
-                parsed.scheme, parsed.netloc, parsed.path,
-                parsed.params, new_query, parsed.fragment
-            ))
-        return url
+        return clean_sqlalchemy_url(self.MARKET_DATABASE_URL)
+
+
+def clean_sqlalchemy_url(url: str) -> str:
+    """Add the pymysql driver (when needed) and drop disallowed query params."""
+    if url.startswith("mysql://") and "+pymysql" not in url:
+        url = url.replace("mysql://", "mysql+pymysql://", 1)
+    parsed = urlparse(url)
+    if parsed.query:
+        query_params = parse_qs(parsed.query)
+        query_params.pop("ssl-mode", None)
+        new_query = urlencode(query_params, doseq=True)
+        url = urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, new_query, parsed.fragment
+        ))
+    return url
 
 
 settings = Settings()

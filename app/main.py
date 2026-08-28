@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 
 from app.config import settings
 from app.core.security import get_current_user
+from app.db.chat_session import ChatBase, chat_engine
 from app.db.market_session import MarketBase, market_engine
 from app.db.session import Base, engine
 from app.models import (  # noqa: F401
@@ -45,8 +46,10 @@ from app.models import (  # noqa: F401
     Transaction,
     User,
 )
+from app.models.chat import ChatMessage, ChatThread, ChatUserKey  # noqa: F401
 from app.routers import (
     auth,
+    chat,
     credit,
     customers,
     dashboard,
@@ -152,6 +155,8 @@ def create_application() -> FastAPI:
 
     application.include_router(market.router, prefix="/api/v1")
 
+    application.include_router(chat.router, prefix="/api/v1")
+
     return application
 
 
@@ -203,6 +208,35 @@ async def startup() -> None:
     MarketBase.metadata.create_all(bind=market_engine)
     _ensure_market_source_id_column(market_engine)
     _ensure_market_order_delivery_columns(market_engine)
+
+    # --- Chat database (encrypted conversations) -----------------------------
+    chat_db_url = settings.CHAT_DATABASE_URL
+    if chat_db_url.startswith("mysql"):
+        parsed = urlparse(chat_db_url)
+        chat_db_name = parsed.path.lstrip("/")
+        try:
+            conn = pymysql.connect(
+                host=parsed.hostname,
+                port=parsed.port or 3306,
+                user=parsed.username or "root",
+                password=parsed.password or "",
+                connect_timeout=5,
+            )
+            with conn.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{chat_db_name}`")
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    ChatBase.metadata.create_all(bind=chat_engine)
+
+    # Purge any chat messages older than the 4-day TTL on startup.
+    from app.db.chat_session import ChatSessionLocal
+    from app.services import chat as chat_service
+
+    with ChatSessionLocal() as session:
+        chat_service.purge_expired(session)
 
 
 @app.on_event("shutdown")
