@@ -53,3 +53,7 @@ class EmailVerification(BaseModel):
 class EmailVerificationOTP(BaseModel):
     email: EmailStr
     otp: str
+
+
+class EmailResend(BaseModel):
+    email: EmailStr

@@ -4,7 +4,7 @@ These models use ``MarketBase`` (not the main ``Base``) so they live in an
 isolated database that any client platform can consume via the public API.
 """
 
-from sqlalchemy import Column, Float, ForeignKey, Integer, String, Text, Boolean
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.db.market_session import MarketBase
@@ -31,8 +31,16 @@ class MarketShop(MarketBase, BaseMixin, TimestampMixin):
 
 class MarketProduct(MarketBase, BaseMixin, TimestampMixin):
     __tablename__ = "market_products"
+    __table_args__ = (
+        UniqueConstraint(
+            "shop_id",
+            "source_id",
+            name="uq_market_product_source",
+        ),
+    )
 
     shop_id = Column(String(36), ForeignKey("market_shops.id"), nullable=False, index=True)
+    source_id = Column(String(255), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     price = Column(Float, nullable=False, default=0)
     category = Column(String(100), nullable=False, default="General")
@@ -83,3 +91,37 @@ class MarketCategory(MarketBase, BaseMixin):
 
     name = Column(String(100), nullable=False, unique=True)
     sort_order = Column(Integer, nullable=False, default=0)
+
+
+class MarketOrder(MarketBase, BaseMixin, TimestampMixin):
+    """A purchase placed against a single shop in the market.
+
+    Stored in the market database (cross-platform commerce). The shop's
+    ``owner_id`` (format ``org:<id>``) links the order back to an
+    organisation, and ``buyer_id`` links it to the purchasing ``User`` in the
+    main database. ``status`` drives the lifecycle: ``pending`` → ``completed``
+    or ``cancelled``.
+    """
+
+    __tablename__ = "market_orders"
+
+    buyer_id = Column(String(36), nullable=False, index=True)
+    buyer_name = Column(String(255), nullable=False)
+    buyer_email = Column(String(255), nullable=False)
+
+    shop_id = Column(String(36), ForeignKey("market_shops.id"), nullable=False, index=True)
+    org_id = Column(String(36), nullable=False, index=True)
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    payment_method = Column(String(50), nullable=True)
+    subtotal = Column(Float, nullable=False, default=0)
+    tax = Column(Float, nullable=False, default=0)
+    total = Column(Float, nullable=False, default=0)
+    items = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    delivery_name = Column(String(255), nullable=True)
+    delivery_phone = Column(String(50), nullable=True)
+    delivery_address = Column(String(500), nullable=True)
+
+    shop = relationship("MarketShop")

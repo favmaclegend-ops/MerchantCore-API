@@ -3,6 +3,8 @@
 All functions receive a SQLAlchemy ``Session`` bound to the market database.
 """
 
+import json
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -12,12 +14,12 @@ from sqlalchemy.orm import Session
 from app.models.market import (
     MarketAdvert,
     MarketCategory,
+    MarketOrder,
     MarketProduct,
     MarketProductImage,
     MarketProductVariant,
     MarketShop,
 )
-
 
 # ---------------------------------------------------------------------------
 # Serialisers
@@ -55,6 +57,7 @@ def _product_api(p: MarketProduct) -> dict[str, Any]:
     return {
         "id": p.id,
         "shop_id": p.shop_id,
+        "source_id": p.source_id,
         "name": p.name,
         "price": p.price,
         "category": p.category,
@@ -218,8 +221,26 @@ def create_product(db: Session, shop_id: str, owner_id: str, data: dict[str, Any
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
     if shop.owner_id != owner_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the shop owner can add products")
+
+    source_id = data.get("source_id")
+    if source_id:
+        duplicate = (
+            db.query(MarketProduct)
+            .filter(
+                MarketProduct.shop_id == shop_id,
+                MarketProduct.source_id == source_id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This item is already uploaded to your shop",
+            )
+
     product = MarketProduct(
         shop_id=shop_id,
+        source_id=source_id,
         name=data["name"],
         price=data.get("price", 0),
         category=data.get("category", "General"),
@@ -274,3 +295,253 @@ def delete_product(db: Session, product_id: str, owner_id: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the shop owner can delete this product")
     db.delete(product)
     db.commit()
+
+
+def _owner_org_id(owner_id: str) -> str | None:
+    """Extract the organisation id from an ``org:<id>`` owner key."""
+    if owner_id and owner_id.startswith("org:"):
+        return owner_id[4:]
+    return None
+
+
+def _order_api(order: MarketOrder) -> dict[str, Any]:
+    return {
+        "id": order.id,
+        "buyer_id": order.buyer_id,
+        "buyer_name": order.buyer_name,
+        "buyer_email": order.buyer_email,
+        "shop_id": order.shop_id,
+        "org_id": order.org_id,
+        "status": order.status,
+        "payment_method": order.payment_method,
+        "subtotal": order.subtotal,
+        "tax": order.tax,
+        "total": order.total,
+        "items": json.loads(order.items) if order.items else [],
+        "delivery_name": order.delivery_name,
+        "delivery_phone": order.delivery_phone,
+        "delivery_address": order.delivery_address,
+        "completed_at": order.completed_at.isoformat() if order.completed_at else None,
+        "created_at": order.created_at.isoformat() if order.created_at else None,
+    }
+
+
+def create_order(
+    db: Session,
+    *,
+    shop_id: str,
+    buyer_id: str,
+    buyer_name: str,
+    buyer_email: str,
+    items: list[dict[str, Any]],
+    payment_method: str,
+    subtotal: float,
+    tax: float,
+    total: float,
+    delivery_name: str | None = None,
+    delivery_phone: str | None = None,
+    delivery_address: str | None = None,
+) -> dict[str, Any]:
+    shop = db.query(MarketShop).filter(MarketShop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    org_id = _owner_org_id(shop.owner_id)
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This shop cannot receive orders",
+        )
+    order = MarketOrder(
+        buyer_id=buyer_id,
+        buyer_name=buyer_name,
+        buyer_email=buyer_email,
+        shop_id=shop_id,
+        org_id=org_id,
+        status="pending",
+        payment_method=payment_method,
+        subtotal=round(subtotal, 2),
+        tax=round(tax, 2),
+        total=round(total, 2),
+        items=json.dumps(items),
+        delivery_name=delivery_name,
+        delivery_phone=delivery_phone,
+        delivery_address=delivery_address,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return _order_api(order)
+
+
+def list_buyer_orders(
+    db: Session,
+    buyer_id: str,
+    status_filter: str | None = None,
+) -> dict[str, Any]:
+    q = db.query(MarketOrder).filter(MarketOrder.buyer_id == buyer_id)
+    if status_filter:
+        q = q.filter(MarketOrder.status == status_filter)
+    rows = q.order_by(MarketOrder.created_at.desc()).all()
+    return {"orders": [_order_api(o) for o in rows], "total": len(rows)}
+
+
+def list_org_orders(
+    db: Session,
+    org_id: str,
+    status_filter: str | None = None,
+) -> dict[str, Any]:
+    q = db.query(MarketOrder).filter(MarketOrder.org_id == org_id)
+    if status_filter:
+        q = q.filter(MarketOrder.status == status_filter)
+    rows = q.order_by(MarketOrder.created_at.desc()).all()
+    return {"orders": [_order_api(o) for o in rows], "total": len(rows)}
+
+
+def _load_shop(db: Session, shop_id: str, org_id: str) -> MarketShop:
+    shop = db.query(MarketShop).filter(MarketShop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    if _owner_org_id(shop.owner_id) != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised for this order")
+    return shop
+
+
+def _load_order(db: Session, order_id: str) -> MarketOrder:
+    order = db.query(MarketOrder).filter(MarketOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    return order
+
+
+def _apply_stock_changes(db: Session, app_db: Session, order: MarketOrder) -> None:
+    """Decrement stock on the org inventory product for every completed line.
+
+    MarketProduct.source_id is the org product id, so we can synchronise the
+    market listing's availability from the org database on completion.
+    """
+    from app.models.org_commerce import OrgProduct
+
+    items = json.loads(order.items) if order.items else []
+    for line in items:
+        market_product_id = line.get("product_id")
+        source_id = line.get("source_id")
+        quantity = int(line.get("quantity") or 1)
+        if source_id and app_db is not None:
+            org_product = app_db.query(OrgProduct).filter(OrgProduct.id == source_id).first()
+            if org_product:
+                remaining = max(0, (org_product.stock or 0) - quantity)
+                org_product.stock = remaining
+                if remaining <= 0:
+                    org_product.status = "out-of-stock"
+                if market_product_id:
+                    market_product = db.query(MarketProduct).filter(MarketProduct.id == market_product_id).first()
+                    if market_product:
+                        market_product.in_stock = remaining > 0
+
+
+def complete_order(
+    db: Session,
+    app_db: Session,
+    org_id: str,
+    member,
+    order_id: str,
+) -> dict[str, Any]:
+    """Mark a pending order completed on scan. Writes a POS sale into the org
+    database so the org dashboard totals update, and notifies both sides."""
+    order = _load_order(db, order_id)
+    if order.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This order has already been processed",
+        )
+    _load_shop(db, order.shop_id, org_id)
+
+    order.status = "completed"
+    order.completed_at = datetime.now(UTC)
+    db.commit()
+
+    _apply_stock_changes(db, app_db, order)
+
+    items = json.loads(order.items) if order.items else []
+    from app.models.org_commerce import OrgPosTransaction
+    from app.services.org_notification import create_notification
+
+    txn = OrgPosTransaction(
+        org_id=org_id,
+        type="sale",
+        customer_name=order.buyer_name,
+        amount=order.total,
+        status="completed",
+        items=", ".join(f"{i.get('quantity')}x {i.get('name')}" for i in items),
+        line_items=json.dumps(items),
+        payment_method=order.payment_method or "Market",
+    )
+    app_db.add(txn)
+    app_db.flush()
+
+    create_notification(
+        app_db,
+        org_id=org_id,
+        kind="market_order",
+        title="Market order completed",
+        message=f"{order.buyer_name} completed a market order of {order.total:,.2f}.",
+        severity="success",
+        amount=order.total,
+        actor_name=order.buyer_name,
+        actor_role="Customer",
+        ref=order.id,
+    )
+
+    try:
+        from app.models.notification import Notification
+
+        app_db.add(
+            Notification(
+                type="market_order",
+                title="Order completed",
+                message=f"Your market order {order.id[:8]} was completed by the shop.",
+                link=None,
+                is_read=False,
+            )
+        )
+    except Exception:
+        pass
+
+    app_db.commit()
+    db.refresh(order)
+    return _order_api(order)
+
+
+def cancel_order(
+    db: Session,
+    app_db: Session,
+    org_id: str,
+    member,
+    order_id: str,
+) -> dict[str, Any]:
+    order = _load_order(db, order_id)
+    if order.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only pending orders can be cancelled",
+        )
+    _load_shop(db, order.shop_id, org_id)
+
+    order.status = "cancelled"
+    db.commit()
+    db.refresh(order)
+
+    from app.services.org_notification import create_notification
+
+    create_notification(
+        app_db,
+        org_id=org_id,
+        kind="market_order",
+        title="Market order cancelled",
+        message=f"Market order {order.id[:8]} was cancelled.",
+        severity="warning",
+        actor_name=member.full_name,
+        actor_role=member.role,
+        ref=order.id,
+    )
+    return _order_api(order)

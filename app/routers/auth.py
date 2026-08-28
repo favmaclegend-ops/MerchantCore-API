@@ -22,9 +22,9 @@ from app.core.security import (
 )
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.user import EmailVerificationOTP, Message, Token, UserCreate, UserLogin
+from app.schemas.user import EmailResend, EmailVerificationOTP, Message, Token, UserCreate, UserLogin
 from app.services.email import send_verification_email
-from app.services.rate_limiter import can_send, record_send, remaining_seconds
+from app.services.rate_limiter import blocked_seconds, can_send, record_send, remaining_seconds
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -79,12 +79,28 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
     if not user or not verify_password(user_in.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
-    # FOR production only
     if not user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email not verified. Please check your inbox for the verification code.",
-        )
+        if blocked := blocked_seconds(user.email):
+            detail = (
+                "Too many verification code requests. "
+                f"This account is temporarily blocked — try again in {blocked} seconds."
+            )
+        elif can_send(user.email):
+            otp = generate_otp()
+            user.verification_otp = hash_otp(otp)
+            user.verification_otp_expires_at = get_otp_expiry()
+            user.otp_attempts = 0
+            db.commit()
+            _cache_user(user)
+            send_verification_email(user.email, otp)
+            record_send(user.email)
+            detail = "Email not verified. A new verification code has been sent to your email."
+        else:
+            detail = (
+                "Email not verified. A verification code was sent recently — "
+                f"check your inbox or wait {remaining_seconds(user.email)}s to request a new one."
+            )
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS if blocked else status.HTTP_403_FORBIDDEN, detail=detail)
 
     if not user.is_active: # type:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
@@ -131,13 +147,22 @@ def verify_email(verification: EmailVerificationOTP, db: Session = Depends(get_d
 
 
 @router.post("/resend-verification", response_model=Message)
-def resend_verification(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
+def resend_verification(user_in: EmailResend, db: Session = Depends(get_db)) -> dict:
     user = _get_user_by_email(user_in.email, db)
-    if not user or not verify_password(user_in.password, user.hashed_password):
+    if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     if user.is_verified:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already verified")
+
+    if blocked := blocked_seconds(user.email):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many verification code requests. "
+                f"This account is temporarily blocked — try again in {blocked} seconds."
+            ),
+        )
 
     if not can_send(user.email):
         remaining = remaining_seconds(user.email)

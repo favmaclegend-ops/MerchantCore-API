@@ -770,6 +770,17 @@ def receive_purchase_order(org_id: str, order_id: str, db: DbDep, member: Member
     return org_ui.receive_purchase_order(db, org, member, order_id)
 
 
+@router.patch("/{org_id}/purchase-orders/{order_id}/status", response_model=dict)
+def update_purchase_order_status(
+    org_id: str, order_id: str, body: Annotated[dict, Body()], db: DbDep, member: MemberDep
+) -> dict:
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
+    db, member = _member(org, db, member)
+    return org_ui.set_purchase_order_status(db, org, member, order_id, body.get("status", ""))
+
+
 @router.delete("/{org_id}/purchase-orders/{order_id}", response_model=dict)
 def delete_purchase_order(org_id: str, order_id: str, db: DbDep, member: MemberDep) -> dict:
     org = db.query(Organisation).filter(Organisation.id == org_id).first()

@@ -8,10 +8,13 @@ serves both without ambiguity:
   ``org_id`` so every downstream query can be scoped to the right tenant.
 """
 
+import base64
+import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
+from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, status
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -25,6 +28,29 @@ from app.models.user import User
 ALGORITHM = "HS256"
 OTP_EXPIRE_MINUTES = 15
 MAX_OTP_ATTEMPTS = 5
+QR_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 days
+
+
+def _fernet() -> Fernet:
+    """A Fernet key derived from the app secret so QR tokens are authenticated
+    and confidential (the raw order id never appears in the QR payload)."""
+    digest = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_token(payload: str) -> str:
+    """Encrypt an opaque token string for use in a scan-to-complete QR code."""
+    return _fernet().encrypt(payload.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_token(token: str, max_age_seconds: int = QR_TOKEN_TTL_SECONDS) -> str:
+    """Decrypt a QR token, rejecting anything tampered with or expired."""
+    try:
+        payload = _fernet().decrypt(token.encode("utf-8"), ttl=max_age_seconds)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired code")
+    return payload.decode("utf-8")
+
 
 
 # --------------------------------------------------------------------------- #

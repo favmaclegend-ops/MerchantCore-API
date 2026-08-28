@@ -792,7 +792,173 @@ Completes a sale, decrements product stock, records a transaction, and creates n
 
 ---
 
-## 6. System
+## 6. Market Chat (end-to-end encrypted) — `/api/v1/chat`
+
+The marketplace chat lets a **buyer** (personal user, `user:<id>`) converse with a **shop owner**
+(org member, `org:<org_id>`). It is stored in a **separate database** (`CHAT_DATABASE_URL`,
+default `sqlite:///./chat.db`) and is fully **end-to-end encrypted**:
+
+- Each participant owns an **RSA-2048 / OAEP-SHA256 keypair**. Only the *public* key is ever
+  stored server-side (`chat_user_keys`).
+- Each thread has a random symmetric key; it is stored **only as ciphertext**, wrapped under each
+  participant's RSA public key (`thread_key_wrapped_buyer` / `thread_key_wrapped_owner`).
+- Message bodies are **AES-256-GCM** encrypted with that symmetric key, so the server can never
+  read them without a participant's private key. Since private keys never leave the client, the
+  client decrypts messages locally after fetching them.
+- The symmetric key travels to the server *only* transiently (over TLS) at send time so the server
+  can encrypt the body at rest and re-wrap for any participant lacking a copy.
+- All threads/messages are purged after a **4-day TTL** (`CHAT_TTL_DAYS`) on startup and during
+  reads. A brand-new empty thread is retained; only threads whose messages have all expired (or
+  that themselves aged past the TTL before ever receiving a message) are dropped.
+
+**Identity is resolved from the token** — a `user` token maps to `user:<id>` (buyer), a `member`
+token maps to `org:<org_id>` (owner). Only a **buyer** may *start* a thread
+(`403` otherwise).
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/chat/keys` | user or member | Register the caller's RSA public key (`public_key_pem`) |
+| GET | `/chat/keys/{participant_key}` | user or member | Fetch another participant's public key |
+| POST | `/chat/threads` | **buyer only** | Create (or return) the buyer<->shop thread |
+| GET | `/chat/threads` | user or member | List the caller's threads, newest activity first |
+| GET | `/chat/threads/{thread_id}/messages` | participant | List a thread's (still-encrypted) messages |
+| POST | `/chat/threads/{thread_id}/messages` | participant | Send an encrypted message |
+| POST | `/chat/threads/{thread_id}/read` | participant | Mark a thread read |
+| DELETE | `/chat/threads/{thread_id}` | participant | Delete a thread |
+
+### POST /api/v1/chat/keys
+
+Registers the caller's RSA public key (idempotent — re-registering overwrites).
+
+**Request body:**
+```json
+{ "public_key_pem": "-----BEGIN PUBLIC KEY-----..." }
+```
+
+**Response — 200 OK:**
+```json
+{ "participant_key": "user:3f1c9d2e-..." }
+```
+
+**Errors:** `400` missing public key, `401` invalid auth.
+
+### GET /api/v1/chat/keys/{participant_key}
+
+Returns another participant's registered public key (e.g. the owner's, so the buyer side can be
+verified). **Errors:** `404` key not registered.
+
+**Response — 200 OK:**
+```json
+{ "participant_key": "org:9b2e4a17-...", "public_key_pem": "-----BEGIN PUBLIC KEY-----..." }
+```
+
+### POST /api/v1/chat/threads
+
+Creates (or returns the existing) thread between the calling buyer and a shop.
+
+**Request body:**
+```json
+{
+  "shop_id": "58c4e97d-...",
+  "shop_name": "VR Auto",
+  "shop_image": "https://.../logo.png",
+  "owner_key": "org:9b2e4a17-..."
+}
+```
+
+**Response — 200 OK** (a `Thread` object, see below).
+
+**Errors:** `403` caller is not a buyer, `400` missing `shop_id`/`shop_name`/`owner_key` or the
+buyer has not registered an encryption key yet, `404` buyer not found.
+
+### GET /api/v1/chat/threads
+
+Lists the caller's threads, newest activity first.
+
+**Response — 200 OK:**
+```json
+{ "threads": [ /* Thread objects */ ] }
+```
+
+### GET /api/v1/chat/threads/{thread_id}/messages
+
+Lists a thread's messages. Each body is still **AES-256-GCM ciphertext** — the client decrypts it
+locally with the thread key it unwrapped from its own private key.
+
+**Response — 200 OK:**
+```json
+{
+  "thread": { /* Thread object */ },
+  "messages": [ /* Message objects */ ]
+}
+```
+
+**Errors:** `403` caller is not a participant.
+
+### POST /api/v1/chat/threads/{thread_id}/messages
+
+Sends an encrypted message. The client passes the **encrypted** body plus the base64 thread key it
+recovered from its own private key, so the server can store the body encrypted and re-wrap the key
+for the owner.
+
+**Request body:**
+```json
+{ "text": "<AES-256-GCM base64(iv|ct)>", "thread_key": "<base64 symmetric key>" }
+```
+
+**Response — 200 OK:**
+```json
+{ "message": { /* Message object */ } }
+```
+
+**Errors:** `400` missing text/thread_key, `403` not a participant, `404` thread not found.
+
+### POST /api/v1/chat/threads/{thread_id}/read
+
+Marks the thread read for the calling participant (clears `unread_buyer` or `unread_owner`).
+Returns the updated **Thread object**.
+
+### DELETE /api/v1/chat/threads/{thread_id}
+
+Deletes a thread the caller participates in. **Response:** `{ "message": "Thread deleted" }`.
+**Errors:** `403` not a participant, `404` thread not found.
+
+### Thread object
+
+```json
+{
+  "id": "78af4a7a-...",
+  "buyer_key": "user:3f1c9d2e-...",
+  "buyer_name": "Jane Buyer",
+  "owner_key": "org:9b2e4a17-...",
+  "shop_id": "58c4e97d-...",
+  "shop_name": "VR Auto",
+  "shop_image": "https://.../logo.png",
+  "thread_key_wrapped_buyer": "<RSA-OAEP wrapped key, base64>",
+  "thread_key_wrapped_owner": null,
+  "last_message_at": "2026-08-28T03:32:49.697552",
+  "unread_buyer": 0,
+  "unread_owner": 0,
+  "created_at": "2026-08-28T03:32:49.697552"
+}
+```
+
+### Message object
+
+```json
+{
+  "id": "2e49aef5-...",
+  "thread_id": "72cf4a9a-...",
+  "sender_key": "user:3f1c9d2e-...",
+  "ciphertext": "<AES-256-GCM base64(iv|ct)>",
+  "iv": "<base64>",
+  "sent_at": "2026-08-28T03:32:49.697552"
+}
+```
+
+---
+
+## 7. System
 
 | Method | Path | Description |
 |---|---|---|
@@ -803,7 +969,7 @@ Completes a sale, decrements product stock, records a transaction, and creates n
 
 ---
 
-## 7. Examples
+## 8. Examples
 
 ### curl
 
@@ -843,6 +1009,15 @@ curl -H "Authorization: Bearer MEMBER_TOKEN" \
 curl -X POST "$BASE/organisations/ORG_ID/pos/checkout" \
   -H "Authorization: Bearer MEMBER_TOKEN" -H "Content-Type: application/json" \
   -d '{"items":[{"productId":"PRODUCT_ID","quantity":1}],"paymentMethod":"card"}'
+
+# 9. Market Chat — register the buyer's public key, open a thread, list it
+curl -X POST "$BASE/chat/keys" -H "Authorization: Bearer USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"public_key_pem":"-----BEGIN PUBLIC KEY-----..."}'
+curl -X POST "$BASE/chat/threads" -H "Authorization: Bearer USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"shop_id":"58c4e97d-...","shop_name":"VR Auto","owner_key":"org:9b2e4a17-..."}'
+curl -H "Authorization: Bearer USER_TOKEN" "$BASE/chat/threads"
 ```
 
 ### JavaScript (fetch)
@@ -879,7 +1054,7 @@ async function api(path, options = {}) {
 
 ---
 
-## 8. Error Handling
+## 9. Error Handling
 
 All errors are returned as JSON in the FastAPI format:
 
@@ -912,7 +1087,7 @@ All errors are returned as JSON in the FastAPI format:
 
 ---
 
-## 9. Notes
+## 10. Notes
 
 - All timestamps are stored in **UTC**.
 - Verification codes expire after **15 minutes**; max **5 failed attempts**.
