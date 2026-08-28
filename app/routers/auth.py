@@ -79,28 +79,28 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
     if not user or not verify_password(user_in.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
-    if not user.is_verified:
-        if blocked := blocked_seconds(user.email):
-            detail = (
-                "Too many verification code requests. "
-                f"This account is temporarily blocked — try again in {blocked} seconds."
-            )
-        elif can_send(user.email):
-            otp = generate_otp()
-            user.verification_otp = hash_otp(otp)
-            user.verification_otp_expires_at = get_otp_expiry()
-            user.otp_attempts = 0
-            db.commit()
-            _cache_user(user)
-            send_verification_email(user.email, otp)
-            record_send(user.email)
-            detail = "Email not verified. A new verification code has been sent to your email."
-        else:
-            detail = (
-                "Email not verified. A verification code was sent recently — "
-                f"check your inbox or wait {remaining_seconds(user.email)}s to request a new one."
-            )
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS if blocked else status.HTTP_403_FORBIDDEN, detail=detail)
+    # if not user.is_verified:
+    #     if blocked := blocked_seconds(user.email):
+    #         detail = (
+    #             "Too many verification code requests. "
+    #             f"This account is temporarily blocked — try again in {blocked} seconds."
+    #         )
+    #     elif can_send(user.email):
+    #         otp = generate_otp()
+    #         user.verification_otp = hash_otp(otp)
+    #         user.verification_otp_expires_at = get_otp_expiry()
+    #         user.otp_attempts = 0
+    #         db.commit()
+    #         _cache_user(user)
+    #         send_verification_email(user.email, otp)
+    #         record_send(user.email)
+    #         detail = "Email not verified. A new verification code has been sent to your email."
+    #     else:
+    #         detail = (
+    #             "Email not verified. A verification code was sent recently — "
+    #             f"check your inbox or wait {remaining_seconds(user.email)}s to request a new one."
+    #         )
+    #     raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS if blocked else status.HTTP_403_FORBIDDEN, detail=detail)
 
     if not user.is_active: # type:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
