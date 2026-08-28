@@ -3,6 +3,7 @@ from app.models.customer import Customer  # noqa: F401
 from app.models.market import (  # noqa: F401
     MarketAdvert,
     MarketCategory,
+    MarketOrder,
     MarketProduct,
     MarketProductImage,
     MarketProductVariant,

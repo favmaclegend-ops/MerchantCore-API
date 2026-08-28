@@ -14,6 +14,7 @@ from app.models import (  # noqa: F401
     Customer,
     MarketAdvert,
     MarketCategory,
+    MarketOrder,
     MarketProduct,
     MarketProductImage,
     MarketProductVariant,
@@ -88,6 +89,30 @@ def _ensure_market_source_id_column(engine) -> None:
                         "ON market_products (shop_id, source_id)"
                     )
                 )
+    except Exception:
+        pass
+
+
+def _ensure_market_order_delivery_columns(engine) -> None:
+    """Add delivery columns to existing ``market_orders`` tables.
+
+    ``create_all`` never alters existing tables, so market databases that
+    predate the delivery-address feature are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        if "market_orders" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("market_orders")}
+        additions = {
+            "delivery_name": "ADD COLUMN delivery_name VARCHAR(255) NULL",
+            "delivery_phone": "ADD COLUMN delivery_phone VARCHAR(50) NULL",
+            "delivery_address": "ADD COLUMN delivery_address VARCHAR(500) NULL",
+        }
+        with engine.begin() as conn:
+            for name, ddl in additions.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE market_orders {ddl}"))
     except Exception:
         pass
 
@@ -177,6 +202,7 @@ async def startup() -> None:
 
     MarketBase.metadata.create_all(bind=market_engine)
     _ensure_market_source_id_column(market_engine)
+    _ensure_market_order_delivery_columns(market_engine)
 
 
 @app.on_event("shutdown")

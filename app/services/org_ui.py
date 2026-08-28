@@ -1183,7 +1183,7 @@ def create_purchase_order(
         supplier_name=supplier.name,
         items=json.dumps(normalized),
         total=round(total, 2),
-        status="sent",
+        status="pending",
         ordered_at=now_iso(),
     )
     db.add(order)
@@ -1212,15 +1212,8 @@ def list_purchase_orders(db: Session, org: Organisation, member: OrgMember, stat
     return {"orders": [purchase_order_as_api(o) for o in rows], "total": len(rows)}
 
 
-def receive_purchase_order(db: Session, org: Organisation, member: OrgMember, order_id: str) -> dict:
-    require_manager(member)
-    order = (
-        db.query(OrgPurchaseOrder).filter(OrgPurchaseOrder.id == order_id, OrgPurchaseOrder.org_id == org.id).first()
-    )
-    if not order:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
-    if order.status == "received":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order already received")
+def _restock_from_items(db: Session, org: Organisation, order: OrgPurchaseOrder) -> None:
+    """Add the purchased quantities to each product referenced by the order."""
     try:
         items = json.loads(order.items or "[]")
     except (TypeError, ValueError):
@@ -1232,6 +1225,18 @@ def receive_purchase_order(db: Session, org: Organisation, member: OrgMember, or
             product = db.query(OrgProduct).filter(OrgProduct.id == product_id, OrgProduct.org_id == org.id).first()
             if product:
                 product.stock += quantity
+
+
+def receive_purchase_order(db: Session, org: Organisation, member: OrgMember, order_id: str) -> dict:
+    require_manager(member)
+    order = (
+        db.query(OrgPurchaseOrder).filter(OrgPurchaseOrder.id == order_id, OrgPurchaseOrder.org_id == org.id).first()
+    )
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+    if order.status == "received":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order already received")
+    _restock_from_items(db, org, order)
     order.status = "received"
     order.received_at = now_iso()
     db.commit()
@@ -1243,6 +1248,69 @@ def receive_purchase_order(db: Session, org: Organisation, member: OrgMember, or
         title="Purchase order received",
         message=f"PO {order.po_number} was marked received and stock updated.",
         severity="success",
+        amount=order.total,
+        actor_name=member.full_name,
+        actor_role=member.role,
+        ref=order.id,
+    )
+    return purchase_order_as_api(order)
+
+
+def set_purchase_order_status(
+    db: Session, org: Organisation, member: OrgMember, order_id: str, new_status: str
+) -> dict:
+    """Advance a purchase order through its lifecycle.
+
+    Supported transitions (frontend workflow):
+      draft -> pending (submit)
+      pending -> approved / cancelled
+      approved -> received (or cancelled)
+    """
+    require_manager(member)
+    order = (
+        db.query(OrgPurchaseOrder).filter(OrgPurchaseOrder.id == order_id, OrgPurchaseOrder.org_id == org.id).first()
+    )
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found")
+
+    valid = {"draft", "pending", "approved", "received", "cancelled"}
+    if new_status not in valid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid purchase order status")
+
+    allowed = {
+        "draft": {"pending", "cancelled"},
+        "pending": {"approved", "cancelled"},
+        "approved": {"received", "cancelled"},
+        "received": set(),
+        "cancelled": set(),
+    }
+    if new_status not in allowed.get(order.status, set()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change a purchase order from '{order.status}' to '{new_status}'",
+        )
+
+    if new_status == "received":
+        _restock_from_items(db, org, order)
+        order.received_at = now_iso()
+
+    order.status = new_status
+    db.commit()
+    db.refresh(order)
+
+    verb = {
+        "pending": "submitted",
+        "approved": "approved",
+        "received": "received",
+        "cancelled": "cancelled",
+    }.get(new_status, new_status)
+    create_notification(
+        db,
+        org_id=org.id,
+        kind="inventory",
+        title="Purchase order updated",
+        message=f"PO {order.po_number} was {verb}.",
+        severity="success" if new_status == "received" else "info",
         amount=order.total,
         actor_name=member.full_name,
         actor_role=member.role,
@@ -1316,6 +1384,27 @@ def update_shipment_status(db: Session, org: Organisation, member: OrgMember, sh
     shipment.status = status
     if status == "delivered":
         shipment.delivered_at = now_iso()
+        po = (
+            db.query(OrgPurchaseOrder)
+            .filter(OrgPurchaseOrder.id == shipment.po_id, OrgPurchaseOrder.org_id == org.id)
+            .first()
+        )
+        if po and po.status != "received":
+            _restock_from_items(db, org, po)
+            po.status = "received"
+            po.received_at = now_iso()
+            create_notification(
+                db,
+                org_id=org.id,
+                kind="inventory",
+                title="Shipment delivered",
+                message=f"Shipment {shipment.tracking_number} arrived — {po.po_number} received, stock restocked.",
+                severity="success",
+                amount=po.total,
+                actor_name=member.full_name,
+                actor_role=member.role,
+                ref=po.id,
+            )
     db.commit()
     db.refresh(shipment)
     return shipment_as_api(shipment)
@@ -1554,7 +1643,7 @@ def org_dashboard(db: Session, org: Organisation, member: OrgMember) -> dict:
 
     # Last 30 days revenue trend, bucketed by day.
     cutoff = datetime.now(UTC) - timedelta(days=30)
-    
+
     recent = [t for t in sales if t.created_at and t.created_at == cutoff and t.status == "completed"]
     buckets: dict[str, float] = {}
     for t in recent:

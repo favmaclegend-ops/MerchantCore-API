@@ -166,3 +166,103 @@ def test_org_dashboard_is_empty_on_fresh_org(client: TestClient, org_flow) -> No
     assert body["stats"]["productsCount"] == 0
     assert len(body["revenueTrend"]) == 31
     assert body["stockLevels"] == []
+
+
+def test_supply_chain_po_lifecycle_and_auto_restock(client: TestClient, org_flow) -> None:
+    data = org_flow(email="supply@example.com", name="Supply Co")
+    client.post("/api/v1/auth/org/verify-email", json={"email": "supply@example.com", "otp": data["code"]})
+    login_resp = client.post(
+        "/api/v1/auth/org/login", json={"email": "supply@example.com", "password": "password123"}
+    )
+    login = login_resp.json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    org_id = login["org_id"]
+    base = f"/api/v1/organisations/{org_id}"
+
+    # Product starts with low stock.
+    product = client.post(
+        f"{base}/products", headers=headers,
+        json={"name": "Sugar 1kg", "sku": "SUG-001", "price": 15.0, "stock": 5, "category": "Groceries"},
+    ).json()
+    assert product["status"] == "low-stock"
+    product_id = product["id"]
+
+    # Add an active supplier for the Groceries category.
+    supplier = client.post(
+        f"{base}/suppliers", headers=headers,
+        json={"name": "Golden Grains", "email": "orders@gg.example", "categories": ["Groceries"], "status": "active"},
+    ).json()
+    supplier_id = supplier["id"]
+
+    # Create a PO — it must start as "pending" (not "sent").
+    po = client.post(
+        f"{base}/purchase-orders", headers=headers,
+        json={"supplierId": supplier_id, "items": [{"productId": product_id, "quantity": 40}]},
+    ).json()
+    assert po["status"] == "pending", po["status"]
+
+    # Approve works through the new status endpoint.
+    approved = client.patch(
+        f"{base}/purchase-orders/{po['id']}/status", headers=headers, json={"status": "approved"},
+    )
+    assert approved.status_code == 200, approved.json()
+    assert approved.json()["status"] == "approved"
+
+    # Receiving restocks inventory from the PO line quantities.
+    received = client.post(f"{base}/purchase-orders/{po['id']}/receive", headers=headers)
+    assert received.status_code == 200, received.json()
+    assert received.json()["status"] == "received"
+    refreshed = client.get(f"{base}/products/{product_id}", headers=headers).json()
+    assert refreshed["stock"] == 5 + 40
+    assert refreshed["status"] == "in-stock"
+
+    # Invalid transition: cannot cancel a received order.
+    bad = client.patch(
+        f"{base}/purchase-orders/{po['id']}/status", headers=headers, json={"status": "cancelled"},
+    )
+    assert bad.status_code == 400
+
+
+def test_shipment_delivered_auto_receives_po_and_restocks(client: TestClient, org_flow) -> None:
+    data = org_flow(email="ship@example.com", name="Ship Co")
+    client.post("/api/v1/auth/org/verify-email", json={"email": "ship@example.com", "otp": data["code"]})
+    login = client.post(
+        "/api/v1/auth/org/login", json={"email": "ship@example.com", "password": "password123"}
+    ).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    org_id = login["org_id"]
+    base = f"/api/v1/organisations/{org_id}"
+
+    product = client.post(
+        f"{base}/products", headers=headers,
+        json={"name": "Rice 5kg", "sku": "RIC-001", "price": 25.0, "stock": 3, "category": "Groceries"},
+    ).json()
+    supplier = client.post(
+        f"{base}/suppliers", headers=headers,
+        json={"name": "Rice Mills", "email": "rice@rm.example", "categories": ["Groceries"], "status": "active"},
+    ).json()
+    po = client.post(
+        f"{base}/purchase-orders", headers=headers,
+        json={"supplierId": supplier["id"], "items": [{"productId": product["id"], "quantity": 50}]},
+    ).json()
+
+    shipment = client.post(
+        f"{base}/shipments", headers=headers,
+        json={"poId": po["id"], "carrier": "Express Cargo"},
+    ).json()
+
+    # Delivering the shipment auto-receives the PO and restocks inventory.
+    delivered = client.patch(
+        f"{base}/shipments/{shipment['id']}/status", headers=headers, json={"status": "delivered"},
+    )
+    assert delivered.status_code == 200, delivered.json()
+    assert delivered.json()["status"] == "delivered"
+
+    po_after = next(
+        o for o in client.get(f"{base}/purchase-orders", headers=headers).json()["orders"] if o["id"] == po["id"]
+    )
+    assert po_after["status"] == "received"
+
+    refreshed = client.get(f"{base}/products/{product['id']}", headers=headers).json()
+    assert refreshed["stock"] == 3 + 50
+
