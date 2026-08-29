@@ -277,3 +277,43 @@ def test_api_requires_key_registration(client):
         headers=headers,
     )
     assert r.status_code == 400, r.text
+
+
+def test_delete_single_message(client):
+    buyer_pub, buyer_priv = chat_crypto.generate_keypair()
+    user = make_user("buyer-delete@example.com", "buyer-delete")
+    token = user_token(user)
+
+    key_resp = client.post("/chat/keys", json={"public_key_pem": buyer_pub}, headers={"Authorization": f"Bearer {token}"})
+    assert key_resp.status_code == 200
+
+    thread_resp = client.post(
+        "/chat/threads",
+        json={"shop_id": "shop-delete", "shop_name": "Delete Shop", "owner_key": "org:2"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert thread_resp.status_code == 200
+    thread = thread_resp.json()
+    thread_key = chat_crypto.unwrap_secret(buyer_priv, thread["thread_key_wrapped_buyer"])
+
+    send_resp = client.post(
+        f"/chat/threads/{thread['id']}/messages",
+        json={"text": "hello world", "thread_key": thread_key},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert send_resp.status_code == 200
+    message_id = send_resp.json()["message"]["id"]
+
+    delete_resp = client.patch(
+        f"/chat/threads/{thread['id']}/messages/{message_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["message_id"] == message_id
+
+    list_resp = client.get(
+        f"/chat/threads/{thread['id']}/messages",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["messages"] == []

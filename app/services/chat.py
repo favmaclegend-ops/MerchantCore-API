@@ -246,6 +246,46 @@ def delete_thread(db: Session, *, thread_id: str, participant_key: str) -> None:
     db.commit()
 
 
+def delete_message(
+    db: Session,
+    *,
+    thread_id: str,
+    message_id: str,
+    participant_key: str,
+) -> dict[str, Any]:
+    """Delete a single message from a thread, leaving the thread itself intact."""
+    thread = get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    if not _participant_is_member(thread, participant_key):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a participant of this thread")
+
+    message = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.id == message_id, ChatMessage.thread_id == thread_id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    if str(message.sender_key) != participant_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the message sender can delete that message",
+        )
+
+    db.delete(message)
+
+    remaining = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.thread_id == thread_id)
+        .order_by(ChatMessage.sent_at.desc())
+        .first()
+    )
+    thread.last_message_at = remaining.sent_at if remaining is not None else None  # type: ignore[assignment]
+    db.commit()
+    return {"message": "Message deleted", "thread_id": thread_id, "message_id": message_id}
+
+
 # --------------------------------------------------------------------------- #
 # TTL purge (4 days)
 # --------------------------------------------------------------------------- #
