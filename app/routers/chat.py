@@ -203,3 +203,20 @@ def delete_thread(thread_id: str, db: ChatDb, app_db: AppDb, authorization: str 
     actor = get_chat_actor(authorization, app_db)
     chat.delete_thread(db, thread_id=thread_id, participant_key=actor.participant_key)
     return {"message": "Thread deleted"}
+
+
+@router.patch("/threads/{thread_id}/messages/{message_id}")
+def delete_message(
+    thread_id: str,
+    message_id: str,
+    db: ChatDb,
+    app_db: AppDb,
+    authorization: str = Header(...),
+) -> dict:
+    actor = get_chat_actor(authorization, app_db)
+    return chat.delete_message(
+        db,
+        thread_id=thread_id,
+        message_id=message_id,
+        participant_key=actor.participant_key,
+    )

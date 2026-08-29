@@ -1641,10 +1641,12 @@ def org_dashboard(db: Session, org: Organisation, member: OrgMember) -> dict:
         db.query(OrgPayrollRun).filter(OrgPayrollRun.org_id == org.id, OrgPayrollRun.status == "pending").count()
     )
 
-    # Last 30 days revenue trend, bucketed by day.
-    cutoff = datetime.now(UTC) - timedelta(days=30)
+    # Last 30 days revenue trend, bucketed by day. created_at is stored as a
+    # naive UTC datetime, so compare against a naive cutoff (an aware cutoff
+    # would raise on >= vs the naive column values).
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=30)
 
-    recent = [t for t in sales if t.created_at and t.created_at == cutoff and t.status == "completed"]
+    recent = [t for t in sales if t.created_at and t.created_at >= cutoff and t.status == "completed"]
     buckets: dict[str, float] = {}
     for t in recent:
         day = t.created_at.date().isoformat()
