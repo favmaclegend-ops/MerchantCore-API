@@ -177,3 +177,22 @@ def test_cancel_order(market_db, app_db):
     from app.models.org_commerce import OrgPosTransaction
 
     assert app_db.query(OrgPosTransaction).count() == 0
+
+
+def test_delete_order_removes_row(market_db):
+    shop, _ = _shop_with_product(market_db, product_id="prod-1")
+    order = _create_order(market_db, shop["id"])
+
+    result = market.delete_order(market_db, order["id"])
+    assert result["order_id"] == order["id"]
+
+    assert market.list_org_orders(market_db, org_id="o1")["total"] == 0
+    assert market.list_buyer_orders(market_db, buyer_id="u1")["total"] == 0
+
+
+def test_delete_missing_order_raises(market_db):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        market.delete_order(market_db, "does-not-exist")
+    assert exc.value.status_code == 404

@@ -545,3 +545,11 @@ def cancel_order(
         ref=order.id,
     )
     return _order_api(order)
+
+
+def delete_order(db: Session, order_id: str) -> dict[str, Any]:
+    """Hard-delete a market order row."""
+    order = _load_order(db, order_id)
+    db.delete(order)
+    db.commit()
+    return {"message": "Order deleted", "order_id": order_id}

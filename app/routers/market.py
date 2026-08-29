@@ -180,6 +180,17 @@ def buyer_orders(db: MarketDb, user: UserDep, status: str | None = Query(None)) 
     return market.list_buyer_orders(db, buyer_id=user.id, status_filter=status)
 
 
+@router.delete("/orders/{order_id}")
+def delete_buyer_order(order_id: str, db: MarketDb, user: UserDep) -> dict:
+    order = market._load_order(db, order_id)
+    if order.buyer_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorised for this order",
+        )
+    return market.delete_order(db, order_id)
+
+
 @router.get("/orders/{order_id}/qrcode")
 def buyer_order_qrcode(order_id: str, db: MarketDb, user: UserDep) -> dict:
     order = market._load_order(db, order_id)
@@ -221,3 +232,10 @@ def scan_complete_order(body: Annotated[dict, Body()], db: MarketDb, app_db: App
 @router.post("/orders/org/{order_id}/cancel")
 def cancel_order(order_id: str, db: MarketDb, app_db: AppDb, member: MemberDep) -> dict:
     return market.cancel_order(db, app_db, member.org_id, member, order_id)
+
+
+@router.delete("/orders/org/{order_id}")
+def delete_org_order(order_id: str, db: MarketDb, member: MemberDep) -> dict:
+    order = market._load_order(db, order_id)
+    market._load_shop(db, order.shop_id, member.org_id)
+    return market.delete_order(db, order_id)
