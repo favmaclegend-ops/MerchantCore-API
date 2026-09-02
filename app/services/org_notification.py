@@ -50,6 +50,20 @@ def _as_api(item: OrgNotification, member_id: str) -> dict:
     }
 
 
+def _visible_to(item: OrgNotification, member: OrgMember) -> bool:
+    """Whether this member may see a notification.
+
+    - ``admin_only``  : admins / super-admins only (privacy for payroll).
+    - ``user_id`` set : personal — only that user (their own payment record).
+    - otherwise        : org-wide transparency feed (default).
+    """
+    if item.admin_only:
+        return member.role in ("super-admin", "admin")
+    if item.user_id:
+        return bool(member.user_id) and member.user_id == item.user_id
+    return True
+
+
 def create_notification(
     db: Session,
     *,
@@ -63,6 +77,8 @@ def create_notification(
     ref: str | None = None,
     actor_name: str | None = None,
     actor_role: str | None = None,
+    user_id: str | None = None,
+    admin_only: bool = False,
 ) -> OrgNotification:
     item = OrgNotification(
         org_id=org_id,
@@ -75,6 +91,8 @@ def create_notification(
         ref=ref,
         actor_name=actor_name,
         actor_role=actor_role,
+        user_id=user_id,
+        admin_only=admin_only,
     )
     db.add(item)
     db.commit()
@@ -88,10 +106,13 @@ def list_notifications(
     query = db.query(OrgNotification).filter(OrgNotification.org_id == org.id)
     if kind:
         query = query.filter(OrgNotification.kind == kind)
-    total = query.count()
-    rows = query.order_by(OrgNotification.created_at.desc()).offset((page - 1) * PER_PAGE).limit(PER_PAGE).all()
+    rows = query.order_by(OrgNotification.created_at.desc()).all()
+    visible = [n for n in rows if _visible_to(n, member)]
+    total = len(visible)
+    start = (page - 1) * PER_PAGE
+    page_rows = visible[start : start + PER_PAGE]
     return {
-        "notifications": [_as_api(n, member.id) for n in rows],
+        "notifications": [_as_api(n, member.id) for n in page_rows],
         "total": total,
         "page": page,
         "pages": max(1, -(-total // PER_PAGE)),
@@ -99,8 +120,8 @@ def list_notifications(
 
 
 def unread_count(db: Session, org: Organisation, member: OrgMember) -> int:
-    rows = db.query(OrgNotification.read_by).filter(OrgNotification.org_id == org.id).all()
-    return sum(1 for (read_by,) in rows if _unread(member.id, read_by))
+    rows = db.query(OrgNotification).filter(OrgNotification.org_id == org.id).all()
+    return sum(1 for item in rows if _visible_to(item, member) and _unread(member.id, item.read_by))
 
 
 def mark_read(db: Session, org: Organisation, member: OrgMember, notification_id: str) -> dict:

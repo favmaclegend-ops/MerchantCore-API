@@ -19,3 +19,5 @@ class OrgNotification(Base, BaseMixin, OrgScopedMixin, TimestampMixin):
     actor_name = Column(String(255), nullable=True)
     actor_role = Column(String(100), nullable=True)
     read_by = Column(Text, nullable=True)  # JSON array of member ids
+    user_id = Column(String(36), index=True, nullable=True)  # personal recipient
+    admin_only = Column(Boolean, default=False, nullable=False)  # admin-audience flag

@@ -9,7 +9,7 @@ from app.config import settings
 from app.core.security import get_current_user
 from app.db.chat_session import ChatBase, chat_engine
 from app.db.market_session import MarketBase, market_engine
-from app.db.session import Base, engine
+from app.db.session import Base, SessionLocal, engine
 from app.models import (  # noqa: F401
     CreditEntry,
     Customer,
@@ -186,6 +186,77 @@ def _ensure_user_id_columns(engine) -> None:
         pass
 
 
+def _ensure_notification_visibility_columns(engine) -> None:
+    """Add recipient/audience columns to org_notifications.
+
+    ``user_id`` marks a notification as personal (sent to a specific user),
+    ``admin_only`` marks it as visible only to admins. Together these let
+    payroll payments stay private instead of being broadcast org-wide.
+    """
+    try:
+        inspector = inspect(engine)
+        if "org_notifications" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("org_notifications")}
+        with engine.begin() as conn:
+            if "user_id" not in columns:
+                conn.execute(text("ALTER TABLE org_notifications ADD COLUMN user_id VARCHAR(36) NULL"))
+            if "admin_only" not in columns:
+                conn.execute(text("ALTER TABLE org_notifications ADD COLUMN admin_only BOOLEAN NOT NULL DEFAULT 0"))
+    except Exception:
+        pass
+
+
+def _backfill_pos_ledger() -> None:
+    """One-time idempotent backfill: mirror completed POS sales into the ledger.
+
+    New sales already post an income ledger entry on completion, but sales made
+    before that feature existed have no matching ledger line. This walks every
+    completed sale and inserts an income entry unless one already exists with
+    the same ``TX-<id>`` reference, so revenue and expenses are reconciled in a
+    single source (accurate P&L). Safe to run on every startup.
+    """
+    try:
+        with SessionLocal() as session:
+            sales = (
+                session.query(OrgPosTransaction)
+                .filter(OrgPosTransaction.type == "sale", OrgPosTransaction.status == "completed")
+                .all()
+            )
+            if not sales:
+                return
+            existing_refs = {
+                r[0]
+                for r in session.query(OrgLedgerEntry.reference)
+                .filter(OrgLedgerEntry.category == "income")
+                .all()
+                if r[0]
+            }
+            inserted = 0
+            for txn in sales:
+                ref = f"TX-{txn.id[:8]}"
+                if ref in existing_refs:
+                    continue
+                session.add(
+                    OrgLedgerEntry(
+                        org_id=txn.org_id,
+                        date=txn.created_at.strftime("%Y-%m-%d") if txn.created_at else None,
+                        account="POS Sales",
+                        category="income",
+                        description=f"Sale {txn.id[:8]} (backfill)",
+                        amount=round(float(txn.amount or 0), 2),
+                        reference=ref,
+                        status="posted",
+                    )
+                )
+                inserted += 1
+            if inserted:
+                session.commit()
+    except Exception:
+        # Never block startup because of a bookkeeping backfill.
+        pass
+
+
 def create_application() -> FastAPI:
     application = FastAPI(
         title=settings.PROJECT_NAME,
@@ -254,6 +325,8 @@ async def startup() -> None:
     _ensure_org_invoice_columns(engine)
     _ensure_org_attendance_columns(engine)
     _ensure_user_id_columns(engine)
+    _ensure_notification_visibility_columns(engine)
+    _backfill_pos_ledger()
 
     market_db_url = settings.MARKET_DATABASE_URL
     if market_db_url.startswith("mysql"):

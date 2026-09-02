@@ -982,6 +982,8 @@ def mark_payroll_paid(db: Session, org: Organisation, member: OrgMember, run_id:
     )
     db.commit()
     db.refresh(run)
+    # Admin-only record of the payment: protects the employee's pay from being
+    # broadcast to the rest of the team.
     create_notification(
         db,
         org_id=org.id,
@@ -993,7 +995,25 @@ def mark_payroll_paid(db: Session, org: Organisation, member: OrgMember, run_id:
         actor_name=member.full_name,
         actor_role=member.role,
         ref=run.id,
+        admin_only=True,
     )
+    # If the employee has a linked account, notify them personally of their own
+    # payment (visible only to them, keeping pay confidential).
+    employee = db.query(OrgEmployee).filter(OrgEmployee.id == run.employee_id, OrgEmployee.org_id == org.id).first()
+    if employee and employee.user_id:
+        create_notification(
+            db,
+            org_id=org.id,
+            kind="payment",
+            title="Payment received",
+            message=f"Your payroll for {run.period} has been paid.",
+            severity="success",
+            amount=run.net,
+            actor_name=member.full_name,
+            actor_role=member.role,
+            ref=run.id,
+            user_id=employee.user_id,
+        )
     return payroll_as_api(run)
 
 
