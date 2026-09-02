@@ -42,6 +42,8 @@ class OrgShipment(Base, BaseMixin, OrgScopedMixin, TimestampMixin):
     po_id = Column(String(36), nullable=False)
     po_number = Column(String(50), nullable=False)
     supplier_name = Column(String(255), nullable=False)
+    market_order_id = Column(String(36), index=True, nullable=True)  # fulfilled market order
+    customer_name = Column(String(255), nullable=True)  # buyer of the market order
     carrier = Column(String(100), nullable=False)
     status = Column(String(20), nullable=False, default="in-transit")
     eta = Column(String(50), nullable=True)  # ISO datetime

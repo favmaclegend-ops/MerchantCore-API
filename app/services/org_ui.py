@@ -916,11 +916,29 @@ def payroll_as_api(run: OrgPayrollRun) -> dict:
 
 
 def generate_payroll(db: Session, org: Organisation, member: OrgMember, period: str) -> dict:
-    """Compute net pay for every employee for the period (single tax rate for now)."""
+    """Compute net pay for every employee for the period (single tax rate for now).
+
+    Employees who have already been paid for this period are skipped so they are
+    not re-generated (no double payroll for the same month).
+    """
     require_manager(member)
     employees = db.query(OrgEmployee).filter(OrgEmployee.org_id == org.id).all()
+    already_paid = {
+        r.employee_id
+        for r in db.query(OrgPayrollRun)
+        .filter(
+            OrgPayrollRun.org_id == org.id,
+            OrgPayrollRun.period == period,
+            OrgPayrollRun.status == "paid",
+        )
+        .all()
+    }
     created = []
+    skipped = []
     for employee in employees:
+        if employee.id in already_paid:
+            skipped.append(employee.name)
+            continue
         gross = _float(employee.salary)
         tax = round(gross * PAYROLL_TAX_RATE, 2)
         net = round(gross - tax, 2)
@@ -939,17 +957,20 @@ def generate_payroll(db: Session, org: Organisation, member: OrgMember, period: 
     db.commit()
     for run in created:
         db.refresh(run)
+    message = f"Payroll for {period} has been generated for {len(created)} employees."
+    if skipped:
+        message += f" {len(skipped)} already paid for this period were skipped."
     create_notification(
         db,
         org_id=org.id,
         kind="payroll",
         title="Payroll generated",
-        message=f"Payroll for {period} has been generated for {len(created)} employees.",
+        message=message,
         severity="info",
         actor_name=member.full_name,
         actor_role=member.role,
     )
-    return {"runs": [payroll_as_api(r) for r in created], "count": len(created)}
+    return {"runs": [payroll_as_api(r) for r in created], "count": len(created), "skipped": skipped}
 
 
 def list_payroll(db: Session, org: Organisation, member: OrgMember, period: str | None = None) -> dict:
@@ -1731,6 +1752,8 @@ def shipment_as_api(shipment: OrgShipment) -> dict:
         "poId": shipment.po_id,
         "poNumber": shipment.po_number,
         "supplierName": shipment.supplier_name,
+        "marketOrderId": shipment.market_order_id or "",
+        "customerName": shipment.customer_name or "",
         "carrier": shipment.carrier,
         "status": shipment.status,
         "eta": shipment.eta or "",
@@ -1740,6 +1763,13 @@ def shipment_as_api(shipment: OrgShipment) -> dict:
 
 def create_shipment(db: Session, org: Organisation, member: OrgMember, data: dict) -> dict:
     require_manager(member)
+    source = data.get("source") or data.get("origin")
+    is_market = source == "market" or bool(data.get("marketOrderId"))
+
+    if is_market:
+        order_id = data.get("marketOrderId") or data.get("poId")
+        return _create_market_shipment(db, org, member, order_id, data)
+
     po = (
         db.query(OrgPurchaseOrder)
         .filter(OrgPurchaseOrder.id == data.get("poId"), OrgPurchaseOrder.org_id == org.id)
@@ -1764,6 +1794,40 @@ def create_shipment(db: Session, org: Organisation, member: OrgMember, data: dic
     return shipment_as_api(shipment)
 
 
+def _create_market_shipment(
+    db: Session, org: Organisation, member: OrgMember, order_id: str | None, data: dict
+) -> dict:
+    """Create a shipment that fulfils a customer's market order."""
+    if not order_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Market order is required")
+    from app.db.market_session import MarketSessionLocal
+    from app.models.market import MarketOrder
+
+    with MarketSessionLocal() as mdb:
+        order = mdb.query(MarketOrder).filter(MarketOrder.id == order_id, MarketOrder.org_id == org.id).first()
+        if not order:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Market order not found")
+        buyer_name = order.buyer_name or "Customer"
+        po_number = f"MO-{order.id[:8]}"
+    shipment = OrgShipment(
+        org_id=org.id,
+        tracking_number=data.get("trackingNumber")
+        or f"TRK-{org.id[:4].upper()}-{datetime.now(UTC).strftime('%H%M%S')}",
+        po_id=order_id,
+        po_number=po_number,
+        supplier_name=buyer_name,
+        market_order_id=order_id,
+        customer_name=buyer_name,
+        carrier=data.get("carrier") or "Unknown carrier",
+        status=data.get("status") or "in-transit",
+        eta=data.get("eta"),
+    )
+    db.add(shipment)
+    db.commit()
+    db.refresh(shipment)
+    return shipment_as_api(shipment)
+
+
 def list_shipments(db: Session, org: Organisation, member: OrgMember) -> dict:
     rows = db.query(OrgShipment).filter(OrgShipment.org_id == org.id).order_by(OrgShipment.created_at.desc()).all()
     return {"shipments": [shipment_as_api(s) for s in rows], "total": len(rows)}
@@ -1777,30 +1841,61 @@ def update_shipment_status(db: Session, org: Organisation, member: OrgMember, sh
     shipment.status = status
     if status == "delivered":
         shipment.delivered_at = now_iso()
-        po = (
-            db.query(OrgPurchaseOrder)
-            .filter(OrgPurchaseOrder.id == shipment.po_id, OrgPurchaseOrder.org_id == org.id)
-            .first()
-        )
-        if po and po.status != "received":
-            _restock_from_items(db, org, po)
-            po.status = "received"
-            po.received_at = now_iso()
+        if shipment.market_order_id:
+            _complete_market_order_on_delivery(shipment)
             create_notification(
                 db,
                 org_id=org.id,
-                kind="inventory",
+                kind="market_order",
                 title="Shipment delivered",
-                message=f"Shipment {shipment.tracking_number} arrived — {po.po_number} received, stock restocked.",
+                message=f"{shipment.tracking_number} delivered to {shipment.customer_name or 'customer'}.",
                 severity="success",
-                amount=po.total,
                 actor_name=member.full_name,
                 actor_role=member.role,
-                ref=po.id,
+                ref=shipment.id,
             )
+        else:
+            po = (
+                db.query(OrgPurchaseOrder)
+                .filter(OrgPurchaseOrder.id == shipment.po_id, OrgPurchaseOrder.org_id == org.id)
+                .first()
+            )
+            if po and po.status != "received":
+                _restock_from_items(db, org, po)
+                po.status = "received"
+                po.received_at = now_iso()
+                create_notification(
+                    db,
+                    org_id=org.id,
+                    kind="inventory",
+                    title="Shipment delivered",
+                    message=f"Shipment {shipment.tracking_number} arrived — {po.po_number} received, stock restocked.",
+                    severity="success",
+                    amount=po.total,
+                    actor_name=member.full_name,
+                    actor_role=member.role,
+                    ref=po.id,
+                )
     db.commit()
     db.refresh(shipment)
     return shipment_as_api(shipment)
+
+
+def _complete_market_order_on_delivery(shipment: OrgShipment) -> None:
+    """Best-effort: mark a delivered market order as completed in the market DB."""
+    try:
+        from app.db.market_session import MarketSessionLocal
+        from app.models.market import MarketOrder
+
+        with MarketSessionLocal() as mdb:
+            order = mdb.query(MarketOrder).filter(MarketOrder.id == shipment.market_order_id).first()
+            if order and order.status == "pending":
+                order.status = "completed"
+                order.completed_at = datetime.now(UTC)
+                mdb.commit()
+    except Exception:
+        # Never block a delivery acknowledgement because of a cross-DB update.
+        pass
 
 
 def delete_shipment(db: Session, org: Organisation, member: OrgMember, shipment_id: str) -> dict:

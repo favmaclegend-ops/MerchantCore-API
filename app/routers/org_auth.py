@@ -5,7 +5,7 @@ and its Super Admin member, then emails a hashed, expiring verification code.
 No member (including the creator) can log in until the organisation is verified.
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.security import (
@@ -19,7 +19,7 @@ from app.core.security import (
 )
 from app.db.session import get_db
 from app.models.organisation import Organisation, OrgMember
-from app.services.email import send_email
+from app.services.email import EmailNotConfiguredError, send_email
 from app.services.org_user import login_organisation
 from app.services.rate_limiter import can_send, record_send, remaining_seconds
 
@@ -55,10 +55,25 @@ def _send_code_email(email: str, code: str, org_name: str) -> bool:
     )
 
 
+def _deliver_org_code(email: str, code: str, org_name: str) -> None:
+    """Send the org verification email, surfacing failures as a clear 500."""
+    try:
+        _send_code_email(email, code, org_name)
+    except EmailNotConfiguredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Email is not configured ({e}). Ask the admin to set RESEND_API_KEY or SMTP credentials.",
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send the verification code to {email}. Please try again. ({e})",
+        ) from e
+
+
 @router.post("/register", response_model=dict, status_code=status.HTTP_201_CREATED)
 def register_org(
     body: dict,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> dict:
     name = (body.get("name") or "").strip()
@@ -107,7 +122,7 @@ def register_org(
     db.commit()
     db.refresh(org)
 
-    background_tasks.add_task(_send_code_email, super_admin_email, code, name)
+    _deliver_org_code(super_admin_email, code, name)
     return {
         "message": "Organisation registered. Check your email for the verification code.",
         "org_id": org.id,
@@ -150,7 +165,7 @@ def verify_org_email(body: dict, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/resend-verification", response_model=dict)
-def resend_org_code(body: dict, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
+def resend_org_code(body: dict, db: Session = Depends(get_db)) -> dict:
     email = (body.get("email") or "").strip().lower()
     org = _get_org_by_member_email(email, db) or _get_org_by_email(email, db)
     if not org:
@@ -176,7 +191,7 @@ def resend_org_code(body: dict, background_tasks: BackgroundTasks, db: Session =
     org.otp_attempts = 0
     db.commit()
 
-    background_tasks.add_task(_send_code_email, admin_email, code, org.name)
+    _deliver_org_code(admin_email, code, org.name)
     record_send(f"org:{org.id}")
     return {"message": "Verification code resent. Please check your inbox."}
 

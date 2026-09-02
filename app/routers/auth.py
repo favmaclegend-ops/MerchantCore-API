@@ -5,7 +5,7 @@ limited to ``MAX_OTP_ATTEMPTS`` wrong attempts before a resend is required —
 matching the hardening applied to organisation accounts.
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.cache import user_cache, user_list_cache
@@ -23,7 +23,7 @@ from app.core.security import (
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import EmailResend, EmailVerificationOTP, Message, Token, UserCreate, UserLogin
-from app.services.email import send_verification_email
+from app.services.email import EmailNotConfiguredError, send_verification_email
 from app.services.rate_limiter import blocked_seconds, can_send, record_send, remaining_seconds
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -45,8 +45,29 @@ def _cache_user(user: User) -> None:
     user_cache[f"user_id:{user.id}"] = user
 
 
+def _deliver_verification(email: str, otp: str) -> None:
+    """Send the verification email, surfacing any failure as a clear 500.
+
+    Swallowing the email error here is what made the code appear to 'never get
+    sent' — instead we raise a descriptive error so the caller (and the user)
+    sees exactly what went wrong.
+    """
+    try:
+        send_verification_email(email, otp)
+    except EmailNotConfiguredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Email is not configured ({e}). Ask the admin to set RESEND_API_KEY or SMTP credentials.",
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send the verification code to {email}. Please try again. ({e})",
+        ) from e
+
+
 @router.post("/register", response_model=Message, status_code=status.HTTP_201_CREATED)
-def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
+def register(user_in: UserCreate, db: Session = Depends(get_db)) -> dict:
     existing = _get_user_by_email(user_in.email, db)
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
@@ -68,7 +89,7 @@ def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session
     _cache_user(user)
     user_list_cache.pop("all", None)
 
-    background_tasks.add_task(send_verification_email, user_in.email, otp)
+    _deliver_verification(user_in.email, otp)
 
     return {"message": "Registration successful. Please check your email for the verification code."}
 
@@ -92,7 +113,7 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> dict:
             user.otp_attempts = 0
             db.commit()
             _cache_user(user)
-            send_verification_email(user.email, otp)
+            _deliver_verification(user.email, otp)
             record_send(user.email)
             detail = "Email not verified. A new verification code has been sent to your email."
         else:
@@ -178,12 +199,7 @@ def resend_verification(user_in: EmailResend, db: Session = Depends(get_db)) -> 
     db.commit()
     _cache_user(user)
 
-    if not send_verification_email(user.email, new_otp):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email",
-        )
-
+    _deliver_verification(user.email, new_otp)
     record_send(user.email)
 
     return {"message": "Verification code resent. Please check your inbox."}

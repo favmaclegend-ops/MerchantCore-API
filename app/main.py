@@ -1,9 +1,12 @@
+import logging
 from urllib.parse import urlparse
 
 import pymysql
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
+
+logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.core.security import get_current_user
@@ -207,6 +210,27 @@ def _ensure_notification_visibility_columns(engine) -> None:
         pass
 
 
+def _ensure_shipment_market_columns(engine) -> None:
+    """Add market-order linkage columns to org_shipments.
+
+    Let a shipment fulfil a customer's market order (not just a supplier PO):
+    ``market_order_id`` holds the market order it completes and ``customer_name``
+    records the buyer.
+    """
+    try:
+        inspector = inspect(engine)
+        if "org_shipments" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("org_shipments")}
+        with engine.begin() as conn:
+            if "market_order_id" not in columns:
+                conn.execute(text("ALTER TABLE org_shipments ADD COLUMN market_order_id VARCHAR(36) NULL"))
+            if "customer_name" not in columns:
+                conn.execute(text("ALTER TABLE org_shipments ADD COLUMN customer_name VARCHAR(255) NULL"))
+    except Exception:
+        pass
+
+
 def _backfill_pos_ledger() -> None:
     """One-time idempotent backfill: mirror completed POS sales into the ledger.
 
@@ -302,6 +326,20 @@ app = create_application()
 
 @app.on_event("startup")
 async def startup() -> None:
+    # Email / verification-code delivery diagnostic — surfaces a misconfigured
+    # provider so it is obvious from the logs instead of silently failing.
+    from app.services.email import email_provider_configured
+
+    if not email_provider_configured():
+        logger.error(
+            "EMAIL NOT CONFIGURED: verification codes will NOT be delivered. "
+            "Set RESEND_API_KEY, or SMTP_USER + SMTP_PASSWORD (plus SMTP_HOST and "
+            "SMTP_FROM_EMAIL) in the environment."
+        )
+    else:
+        mode = "Resend" if settings.RESEND_API_KEY else "SMTP"
+        logger.info("Email provider configured (%s) — verification emails enabled.", mode)
+
     db_url = settings.DATABASE_URL
     if db_url.startswith("mysql"):
         parsed = urlparse(db_url)
@@ -326,6 +364,7 @@ async def startup() -> None:
     _ensure_org_attendance_columns(engine)
     _ensure_user_id_columns(engine)
     _ensure_notification_visibility_columns(engine)
+    _ensure_shipment_market_columns(engine)
     _backfill_pos_ledger()
 
     market_db_url = settings.MARKET_DATABASE_URL
