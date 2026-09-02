@@ -85,6 +85,17 @@ def list_members(
     return org_admin.list_members(db, org, member, search, page)
 
 
+@router.get("/{org_id}/users/available", response_model=dict)
+def list_available_users(
+    org_id: str, db: DbDep, member: MemberDep, search: str | None = None
+) -> dict:
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
+    db, member = _member(org, db, member)
+    return org_admin.list_available_users(db, org, member, search)
+
+
 @router.post("/{org_id}/members", response_model=dict)
 def add_member(
     org_id: str,
@@ -100,7 +111,7 @@ def add_member(
     email = (body.get("email") or "").strip()
     if not email or "@" not in email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email is required")
-    return org_admin.add_member(db, org, member, email, body.get("role", "staff"), body.get("jobTitle"), body.get("password"))
+    return org_admin.add_member(db, org, member, email, body.get("role", "staff"), body.get("jobTitle"), body.get("password"), body.get("userId"))
 
 
 @router.patch("/{org_id}/members/{member_id}/role", response_model=dict)
@@ -663,7 +674,36 @@ def check_in(org_id: str, body: Annotated[dict, Body()], db: DbDep, member: Memb
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
     db, member = _member(org, db, member)
-    return org_ui.check_in(db, org, member, body.get("employeeId"), body.get("date"))
+    return org_ui.check_in(db, org, member, body.get("employeeId"), body.get("date"), body.get("method", "manual"))
+
+
+@router.post("/{org_id}/attendance/terminal/qr", response_model=dict)
+def request_attendance_qr(org_id: str, body: Annotated[dict, Body()], db: DbDep, member: MemberDep) -> dict:
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
+    db, member = _member(org, db, member)
+    return org_ui.request_attendance_qr(db, org, member, body.get("employeeId"), body.get("action", "in"))
+
+
+@router.post("/{org_id}/attendance/scan", response_model=dict)
+def scan_attendance(org_id: str, body: Annotated[dict, Body()], db: DbDep, member: MemberDep) -> dict:
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
+    db, member = _member(org, db, member)
+    return org_ui.redeem_attendance_scan(db, org, member, body.get("token"), body.get("action", "in"))
+
+
+@router.post("/{org_id}/attendance/{employee_id}/mark", response_model=dict)
+def manual_mark_attendance(
+    org_id: str, employee_id: str, body: Annotated[dict, Body()], db: DbDep, member: MemberDep
+) -> dict:
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
+    db, member = _member(org, db, member)
+    return org_ui.manual_mark_attendance(db, org, member, employee_id, body.get("action", "check_in"), body.get("date"))
 
 
 @router.get("/{org_id}/reviews", response_model=dict)

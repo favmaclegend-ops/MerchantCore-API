@@ -173,7 +173,7 @@ def login_organisation(db: Session, email: str, password: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Invites
 # --------------------------------------------------------------------------- #
-def invite_member(db: Session, org: Organisation, email: str, role: str, job_title: str | None, password: str | None = None) -> OrgMember:
+def invite_member(db: Session, org: Organisation, email: str, role: str, job_title: str | None, password: str | None = None, user_id: str | None = None) -> OrgMember:
     if email.lower() == org.business_email.lower():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="That is the owner email and cannot be invited as a member"
@@ -183,12 +183,19 @@ def invite_member(db: Session, org: Organisation, email: str, role: str, job_tit
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A member with this email already exists")
 
+    from app.models.user import User
+
+    linked_user = None
+    if user_id:
+        linked_user = db.query(User).filter(User.id == user_id).first()
+
     raw_password = password if password else generate_otp() + generate_otp()
     member = OrgMember(
         org_id=org.id,
-        email=email.lower(),
-        username=email.lower().split("@")[0],
-        full_name=email.lower().split("@")[0],
+        user_id=linked_user.id if linked_user else None,
+        email=(linked_user.email if linked_user else email).lower(),
+        username=(linked_user.username if linked_user else email.lower().split("@")[0]),
+        full_name=(linked_user.full_name if linked_user else email.lower().split("@")[0]),
         role=role,
         job_title=job_title,
         hashed_password=get_password_hash(raw_password),
@@ -200,7 +207,7 @@ def invite_member(db: Session, org: Organisation, email: str, role: str, job_tit
 
     invite_link = f"{settings.FRONTEND_URL}/login"
     send_email(
-        to_email=email,
+        to_email=member.email,
         subject=f"You've been invited to {org.name}",
         html=(
             f"<p>You've been invited to join <b>{org.name}</b> as <b>{role}</b>.</p>"

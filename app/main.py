@@ -120,6 +120,72 @@ def _ensure_market_order_delivery_columns(engine) -> None:
         pass
 
 
+def _ensure_org_invoice_columns(engine) -> None:
+    """Add customer linkage columns to existing ``org_invoices`` tables.
+
+    ``create_all`` never alters existing tables, so invoices created before the
+    customer-email feature are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        if "org_invoices" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("org_invoices")}
+        additions = {
+            "customer_id": "ADD COLUMN customer_id VARCHAR(64) NULL",
+            "customer_email": "ADD COLUMN customer_email VARCHAR(255) NULL",
+        }
+        with engine.begin() as conn:
+            for name, ddl in additions.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE org_invoices {ddl}"))
+    except Exception:
+        pass
+
+
+def _ensure_org_attendance_columns(engine) -> None:
+    """Add check-out + method columns to existing ``org_attendance`` tables.
+
+    ``create_all`` never alters existing tables, so attendance records created
+    before the QR account-scan feature are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        if "org_attendance" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("org_attendance")}
+        additions = {
+            "check_out": "ADD COLUMN check_out VARCHAR(10) NULL",
+            "check_in_method": "ADD COLUMN check_in_method VARCHAR(20) NULL",
+            "check_out_method": "ADD COLUMN check_out_method VARCHAR(20) NULL",
+        }
+        with engine.begin() as conn:
+            for name, ddl in additions.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE org_attendance {ddl}"))
+    except Exception:
+        pass
+
+
+def _ensure_user_id_columns(engine) -> None:
+    """Add a ``user_id`` link column to org members and employees.
+
+    ``create_all`` never alters existing tables, so rows created before the
+    "select from existing user" feature are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        for table in ("org_members", "org_employees"):
+            if table not in inspector.get_table_names():
+                continue
+            columns = {c["name"] for c in inspector.get_columns(table)}
+            if "user_id" not in columns:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(36) NULL"))
+    except Exception:
+        pass
+
+
 def create_application() -> FastAPI:
     application = FastAPI(
         title=settings.PROJECT_NAME,
@@ -185,6 +251,9 @@ async def startup() -> None:
             pass
 
     Base.metadata.create_all(bind=engine)
+    _ensure_org_invoice_columns(engine)
+    _ensure_org_attendance_columns(engine)
+    _ensure_user_id_columns(engine)
 
     market_db_url = settings.MARKET_DATABASE_URL
     if market_db_url.startswith("mysql"):

@@ -23,6 +23,8 @@ class OrgInvoice(Base, BaseMixin, OrgScopedMixin, TimestampMixin):
 
     number = Column(String(50), nullable=False)
     customer = Column(String(255), nullable=False)
+    customer_id = Column(String(64), nullable=True)
+    customer_email = Column(String(255), nullable=True)
     issued_at = Column(String(20), nullable=True)  # YYYY-MM-DD
     due_at = Column(String(20), nullable=True)  # YYYY-MM-DD
     amount = Column(Float, nullable=False, default=0)

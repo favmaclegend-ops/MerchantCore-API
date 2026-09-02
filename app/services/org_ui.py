@@ -7,6 +7,7 @@ layers 1:1.
 """
 
 import json
+import secrets
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,6 +27,7 @@ from app.models.org_commerce import (
 from app.models.org_finance import OrgInvoice, OrgLedgerEntry, OrgTaxItem
 from app.models.org_hrm import (
     PAYROLL_TAX_RATE,
+    AttendanceToken,
     OrgAttendance,
     OrgBenefit,
     OrgEmployee,
@@ -41,6 +43,10 @@ from app.services.org_notification import create_notification
 
 now_iso = lambda: datetime.now(UTC).isoformat()  # noqa: E731
 
+# Flat sales/VAT rate applied to org revenue (kept in sync with the frontend
+# market cart DEFAULT_TAX_RATE = 0.05).
+SALES_TAX_RATE = 0.05
+
 
 def _int(value: Any, default: int = 0) -> int:
     try:
@@ -54,6 +60,89 @@ def _float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _post_ledger(
+    db: Session,
+    org: Organisation,
+    *,
+    category: str,
+    account: str,
+    description: str,
+    amount: float,
+    reference: str,
+    status: str = "posted",
+) -> OrgLedgerEntry:
+    """Insert an organisation-scoped general ledger entry (source of truth for finance)."""
+    entry = OrgLedgerEntry(
+        org_id=org.id,
+        date=datetime.now(UTC).strftime("%Y-%m-%d"),
+        account=account,
+        category=category,
+        description=description,
+        amount=round(_float(amount), 2),
+        reference=reference,
+        status=status,
+    )
+    db.add(entry)
+    db.flush()
+    return entry
+
+
+def _tax_period(dt: datetime | None = None) -> str:
+    """YYYY-MM period label used to bucket accrued sales tax."""
+    d = dt or datetime.now(UTC)
+    return d.strftime("%Y-%m")
+
+
+def accrue_sales_tax(
+    db: Session,
+    org: Organisation,
+    *,
+    net: float,
+    tax: float,
+) -> OrgTaxItem:
+    """Accrue a VAT / sales-tax obligation for the current period.
+
+    Finds-or-creates the open weekly/monthly "Sales VAT" obligation for the
+    organisation and accumulates the net taxable basis and the tax collected.
+    ``paid`` is intentionally left untouched so past payments accumulate across
+    the period.
+    """
+    amount = round(_float(tax), 2)
+    if amount < 0:
+        amount = 0.0
+    period = _tax_period()
+    item = (
+        db.query(OrgTaxItem)
+        .filter(
+            OrgTaxItem.org_id == org.id,
+            OrgTaxItem.name == "Sales VAT",
+            OrgTaxItem.period == period,
+            OrgTaxItem.status != "paid",
+        )
+        .first()
+    )
+    if item:
+        item.basis = round(_float(item.basis) + net, 2)
+        # The tax due is the accrued basis times the rate; paid stays as-is.
+    else:
+        due_at = (
+            datetime.now(UTC).replace(day=28, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d")
+        )
+        item = OrgTaxItem(
+            org_id=org.id,
+            name="Sales VAT",
+            rate=SALES_TAX_RATE,
+            basis=round(_float(net), 2),
+            period=period,
+            due_at=due_at,
+            paid=0.0,
+            status="due",
+        )
+        db.add(item)
+    db.flush()
+    return item
 
 
 # --------------------------------------------------------------------------- #
@@ -386,6 +475,15 @@ def record_credit_purchase(
         )
         db.add(entry)
     customer.total_spent = _float(customer.total_spent) + amount
+    _post_ledger(
+        db,
+        org,
+        category="income",
+        account="Credit Sales",
+        description=f"Credit sale to {customer.name}",
+        amount=amount,
+        reference=f"CR-{(entry.id or customer.id)[:8]}",
+    )
     db.commit()
     db.refresh(entry)
     _recompute_credit_status(db, org, customer_id)
@@ -509,6 +607,19 @@ def checkout(
     )
     db.add(txn)
     db.flush()
+    _post_ledger(
+        db,
+        org,
+        category="income",
+        account="POS Sales",
+        description=f"Sale {txn.id[:8]} — {len(line_items)} item(s)",
+        amount=total,
+        reference=f"TX-{txn.id[:8]}",
+    )
+    # Accrue the VAT portion of this (tax-inclusive) sale toward compliance.
+    net_amount = round(total / (1 + SALES_TAX_RATE), 2)
+    tax_amount = round(total - net_amount, 2)
+    accrue_sales_tax(db, org, net=net_amount, tax=tax_amount)
 
     if customer_name:
         customer = db.query(OrgCustomer).filter(OrgCustomer.org_id == org.id, OrgCustomer.name == customer_name).first()
@@ -569,6 +680,15 @@ def refund_transaction(db: Session, org: Organisation, member: OrgMember, transa
         if product:
             product.stock += _int(raw.get("quantity"))
     txn.status = "refunded"
+    _post_ledger(
+        db,
+        org,
+        category="expense",
+        account="Sales Refunds",
+        description=f"Refund of {txn.id[:8]}",
+        amount=txn.amount,
+        reference=f"RF-{txn.id[:8]}",
+    )
     db.commit()
     db.refresh(txn)
     create_notification(
@@ -594,6 +714,7 @@ def employee_as_api(employee: OrgEmployee) -> dict:
         "id": employee.id,
         "name": employee.name,
         "email": employee.email,
+        "userId": employee.user_id or "",
         "phone": employee.phone or "",
         "department": employee.department,
         "jobTitle": employee.job_title or "",
@@ -631,10 +752,24 @@ def get_employee(db: Session, org: Organisation, member: OrgMember, employee_id:
 
 def create_employee(db: Session, org: Organisation, member: OrgMember, data: dict) -> dict:
     require_manager(member)
+    name = data["name"]
+    email = data.get("email", "")
+    user_id = data.get("userId")
+    if user_id:
+        from app.models.user import User
+
+        linked = db.query(User).filter(User.id == user_id).first()
+        if linked:
+            name = linked.full_name or name
+            email = linked.email or email
+            user_id = linked.id
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required")
     employee = OrgEmployee(
         org_id=org.id,
-        name=data["name"],
-        email=data.get("email", ""),
+        name=name,
+        email=email,
+        user_id=user_id,
         phone=data.get("phone"),
         department=data.get("department", "General"),
         job_title=data.get("jobTitle"),
@@ -678,6 +813,14 @@ def update_employee(db: Session, org: Organisation, member: OrgMember, employee_
     ):
         if field in data:
             setattr(employee, attr, data[field])
+    if "userId" in data and data.get("userId"):
+        from app.models.user import User
+
+        linked = db.query(User).filter(User.id == data["userId"]).first()
+        if linked:
+            employee.user_id = linked.id
+            employee.name = linked.full_name or employee.name
+            employee.email = linked.email or employee.email
     if "salary" in data:
         employee.salary = _float(data.get("salary"))
     if "benefits" in data:
@@ -828,6 +971,15 @@ def mark_payroll_paid(db: Session, org: Organisation, member: OrgMember, run_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
     run.status = "paid"
     run.processed_at = datetime.now(UTC).strftime("%Y-%m-%d")
+    _post_ledger(
+        db,
+        org,
+        category="expense",
+        account="Payroll",
+        description=f"Payroll {run.employee_name} for {run.period}",
+        amount=run.net,
+        reference=f"PR-{run.id[:8]}",
+    )
     db.commit()
     db.refresh(run)
     create_notification(
@@ -914,6 +1066,9 @@ def attendance_as_api(record: OrgAttendance) -> dict:
         "employeeName": record.employee_name,
         "date": record.date,
         "checkIn": record.check_in or "",
+        "checkOut": record.check_out or "",
+        "checkInMethod": record.check_in_method or "manual",
+        "checkOutMethod": record.check_out_method or "manual",
         "status": record.status,
     }
 
@@ -935,9 +1090,10 @@ def list_attendance(
 
 
 def check_in(
-    db: Session, org: Organisation, member: OrgMember, employee_id: str | None, date: str | None = None
+    db: Session, org: Organisation, member: OrgMember, employee_id: str | None, date: str | None = None,
+    method: str = "manual",
 ) -> dict:
-    require_staff(member)
+    require_manager(member)
     employee = db.query(OrgEmployee).filter(OrgEmployee.id == employee_id, OrgEmployee.org_id == org.id).first()
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -955,6 +1111,7 @@ def check_in(
         employee_name=employee.name,
         date=today,
         check_in=datetime.now(UTC).strftime("%H:%M"),
+        check_in_method=method,
         status="present",
     )
     db.add(record)
@@ -965,12 +1122,210 @@ def check_in(
         org_id=org.id,
         kind="check_in",
         title="Employee checked in",
-        message=f"{employee.name} checked in at {record.check_in}.",
+        message=f"{employee.name} checked in at {record.check_in} ({record.check_in_method}).",
         severity="success",
         actor_name=member.full_name,
         actor_role=member.role,
         ref=record.id,
     )
+    return attendance_as_api(record)
+
+
+def request_attendance_qr(db: Session, org: Organisation, member: OrgMember, employee_id: str, action: str) -> dict:
+    """Generate a short-lived, single-use token the employee scans to confirm presence.
+
+    Only manager-tier members may request a token; the employee redeems it from
+    their own authenticated account.
+    """
+    require_manager(member)
+    if action not in ("in", "out"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action")
+    employee = db.query(OrgEmployee).filter(OrgEmployee.id == employee_id, OrgEmployee.org_id == org.id).first()
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(UTC) + timedelta(minutes=2)
+    db.add(
+        AttendanceToken(
+            org_id=org.id,
+            token=token,
+            employee_id=employee.id,
+            employee_name=employee.name,
+            action=action,
+            expires_at=expires_at.isoformat(),
+        )
+    )
+    db.commit()
+    return {
+        "token": token,
+        "action": action,
+        "employeeId": employee.id,
+        "employeeName": employee.name,
+        "expiresAt": expires_at.isoformat(),
+    }
+
+
+def redeem_attendance_scan(db: Session, org: Organisation, member: OrgMember, token: str, action: str) -> dict:
+    """Redeem a terminal QR token using the employee's own authenticated account.
+
+    The member must map to an employee in this org (by email). This prevents a
+    remote/other user from confirming someone else's presence.
+    """
+    require_staff(member)
+    employee = None
+    if member.user_id:
+        employee = (
+            db.query(OrgEmployee)
+            .filter(OrgEmployee.org_id == org.id, OrgEmployee.user_id == member.user_id)
+            .first()
+        )
+    if not employee:
+        employee = db.query(OrgEmployee).filter(OrgEmployee.org_id == org.id, OrgEmployee.email == member.email).first()
+    if not employee:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Your account is not linked to an employee record"
+        )
+    row = db.query(AttendanceToken).filter(AttendanceToken.token == token, AttendanceToken.org_id == org.id).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired QR code")
+    if row.used:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This QR code has already been used")
+    try:
+        exp = datetime.fromisoformat(row.expires_at)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Malformed expiry") from None
+    if datetime.now(UTC) > exp:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This QR code has expired")
+    if row.action != action:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This QR code is for the wrong action")
+    if row.employee_id != employee.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="This QR code is for a different employee"
+        )
+
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    record = (
+        db.query(OrgAttendance)
+        .filter(OrgAttendance.org_id == org.id, OrgAttendance.employee_id == employee.id, OrgAttendance.date == today)
+        .first()
+    )
+
+    if action == "in":
+        if record:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already checked in today")
+        record = OrgAttendance(
+            org_id=org.id,
+            employee_id=employee.id,
+            employee_name=employee.name,
+            date=today,
+            check_in=datetime.now(UTC).strftime("%H:%M"),
+            check_in_method="qr",
+            status="present",
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        _notify_check_in(db, org, member, record)
+    else:  # out
+        if not record or not record.check_in:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No check-in found for today")
+        if record.check_out:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already checked out today")
+        record.check_out = datetime.now(UTC).strftime("%H:%M")
+        record.check_out_method = "qr"
+        db.commit()
+        db.refresh(record)
+        _notify_check_out(db, org, member, record)
+
+    row.used = datetime.now(UTC).isoformat()
+    db.commit()
+    return attendance_as_api(record)
+
+
+def _notify_check_in(db: Session, org: Organisation, member: OrgMember, record: OrgAttendance) -> None:
+    create_notification(
+        db,
+        org_id=org.id,
+        kind="check_in",
+        title="Employee checked in",
+        message=f"{record.employee_name} checked in at {record.check_in} via QR.",
+        severity="success",
+        actor_name=member.full_name,
+        actor_role=member.role,
+        ref=record.id,
+    )
+
+
+def _notify_check_out(db: Session, org: Organisation, member: OrgMember, record: OrgAttendance) -> None:
+    create_notification(
+        db,
+        org_id=org.id,
+        kind="check_out",
+        title="Employee checked out",
+        message=f"{record.employee_name} checked out at {record.check_out} via QR.",
+        severity="info",
+        actor_name=member.full_name,
+        actor_role=member.role,
+        ref=record.id,
+    )
+
+
+def manual_mark_attendance(
+    db: Session, org: Organisation, member: OrgMember, employee_id: str, action: str, date: str | None = None
+) -> dict:
+    """Admin-manager bypass: mark an employee present/absent or check them out without a QR scan."""
+    require_manager(member)
+    employee = db.query(OrgEmployee).filter(OrgEmployee.id == employee_id, OrgEmployee.org_id == org.id).first()
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    today = date or datetime.now(UTC).strftime("%Y-%m-%d")
+    record = (
+        db.query(OrgAttendance)
+        .filter(OrgAttendance.org_id == org.id, OrgAttendance.employee_id == employee_id, OrgAttendance.date == today)
+        .first()
+    )
+    if action == "check_in":
+        if record:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already checked in today")
+        record = OrgAttendance(
+            org_id=org.id,
+            employee_id=employee.id,
+            employee_name=employee.name,
+            date=today,
+            check_in=datetime.now(UTC).strftime("%H:%M"),
+            check_in_method="manual",
+            status="present",
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        _notify_check_in(db, org, member, record)
+    elif action == "check_out":
+        if not record or not record.check_in:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No check-in found for today")
+        if record.check_out:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already checked out today")
+        record.check_out = datetime.now(UTC).strftime("%H:%M")
+        record.check_out_method = "manual"
+        db.commit()
+        db.refresh(record)
+        _notify_check_out(db, org, member, record)
+    elif action == "absent":
+        if record:
+            db.delete(record)
+            db.commit()
+        record = OrgAttendance(
+            org_id=org.id,
+            employee_id=employee.id,
+            employee_name=employee.name,
+            date=today,
+            status="absent",
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action")
     return attendance_as_api(record)
 
 
@@ -1239,6 +1594,15 @@ def receive_purchase_order(db: Session, org: Organisation, member: OrgMember, or
     _restock_from_items(db, org, order)
     order.status = "received"
     order.received_at = now_iso()
+    _post_ledger(
+        db,
+        org,
+        category="expense",
+        account="Inventory Purchases",
+        description=f"Purchase order {order.po_number} received",
+        amount=order.total,
+        reference=f"PO-{order.id[:8]}",
+    )
     db.commit()
     db.refresh(order)
     create_notification(
@@ -1293,6 +1657,15 @@ def set_purchase_order_status(
     if new_status == "received":
         _restock_from_items(db, org, order)
         order.received_at = now_iso()
+        _post_ledger(
+            db,
+            org,
+            category="expense",
+            account="Inventory Purchases",
+            description=f"Purchase order {order.po_number} received",
+            amount=order.total,
+            reference=f"PO-{order.id[:8]}",
+        )
 
     order.status = new_status
     db.commit()
@@ -1489,6 +1862,8 @@ def invoice_as_api(invoice: OrgInvoice) -> dict:
         "id": invoice.id,
         "number": invoice.number,
         "customer": invoice.customer,
+        "customerId": invoice.customer_id,
+        "customerEmail": invoice.customer_email,
         "issuedAt": invoice.issued_at or "",
         "dueAt": invoice.due_at or "",
         "amount": invoice.amount,
@@ -1512,12 +1887,92 @@ def list_invoices(db: Session, org: Organisation, member: OrgMember, status_filt
     }
 
 
+def _invoice_email_html(org: Organisation, invoice: OrgInvoice) -> str:
+    """Build a formatted invoice email for the customer."""
+    try:
+        items = json.loads(invoice.items or "[]")
+    except (TypeError, ValueError):
+        items = []
+    rows = "".join(
+        f"""<tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;color:#334155;">{item.get('description','')}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;color:#334155;text-align:center;">{item.get('qty',0)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;color:#334155;text-align:right;">{item.get('unitPrice',0):,}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;color:#334155;text-align:right;">{item.get('qty',0) * item.get('unitPrice',0):,.2f}</td>
+        </tr>"""
+        for item in items
+    )
+    return f"""\
+<html>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 16px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">
+        <tr>
+          <td style="background:#0f172a;color:#ffffff;padding:24px 28px;">
+            <h2 style="margin:0;font-size:20px;">Invoice {invoice.number}</h2>
+            <p style="margin:6px 0 0 0;font-size:13px;color:#cbd5e1;">Due {invoice.due_at or '—'}</p>
+          </td>
+        </tr>
+        <tr><td style="padding:24px 28px;color:#334155;font-size:14px;">
+          <p style="margin:0 0 20px 0;">Hi {invoice.customer or 'there'},<br/>Your work has been completed. Please see the details below and make payment by <strong>{invoice.due_at or 'the due date'}</strong>.</p>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr>
+              <th style="padding:10px;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:left;">Description</th>
+              <th style="padding:10px;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:center;">Qty</th>
+              <th style="padding:10px;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:right;">Unit</th>
+              <th style="padding:10px;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;border-bottom:1px solid #e2e8f0;text-align:right;">Amount</th>
+            </tr>
+            {rows if rows else '<tr><td colspan="4" style="padding:10px;color:#94a3b8;">No line items.</td></tr>'}
+            <tr>
+              <td colspan="3" style="padding:10px;font-size:14px;font-weight:600;color:#0f172a;text-align:right;">Total due</td>
+              <td style="padding:10px;font-size:14px;font-weight:700;color:#0f172a;text-align:right;">{invoice.amount:,.2f}</td>
+            </tr>
+          </table>
+          <p style="margin:24px 0 0 0;color:#64748b;font-size:12px;">If you have already made this payment, please ignore this email. Thank you for your business.</p>
+        </td></tr>
+        <tr><td style="background:#0f172a;color:#94a3b8;padding:16px 28px;font-size:12px;text-align:center;">
+          {org.name} &middot; Invoice {invoice.number}
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def _send_invoice_email(org: Organisation, invoice: OrgInvoice) -> bool:
+    if not invoice.customer_email:
+        return False
+    try:
+        from app.services.email import send_email
+    except Exception:  # pragma: no cover
+        return False
+    return send_email(
+        to_email=invoice.customer_email,
+        subject=f"Invoice {invoice.number} — {org.name}",
+        html=_invoice_email_html(org, invoice),
+    )
+
+
 def create_invoice(db: Session, org: Organisation, member: OrgMember, data: dict) -> dict:
     require_manager(member)
+    customer_id = data.get("customerId") or ""
+    customer_email = data.get("customerEmail") or ""
+    customer_name = data.get("customer") or ""
+    if customer_id:
+        customer = db.query(OrgCustomer).filter(
+            OrgCustomer.id == customer_id, OrgCustomer.org_id == org.id
+        ).first()
+        if customer:
+            customer_name = customer_name or customer.name
+            customer_email = customer_email or customer.email
     invoice = OrgInvoice(
         org_id=org.id,
         number=data.get("number") or f"INV-{datetime.now(UTC).strftime('%Y%m%d')}-{org.id[:4].upper()}",
-        customer=data.get("customer") or "",
+        customer=customer_name,
+        customer_id=customer_id or None,
+        customer_email=customer_email or None,
         issued_at=data.get("issuedAt") or datetime.now(UTC).strftime("%Y-%m-%d"),
         due_at=data.get("dueAt"),
         amount=_float(data.get("amount")),
@@ -1527,7 +1982,10 @@ def create_invoice(db: Session, org: Organisation, member: OrgMember, data: dict
     db.add(invoice)
     db.commit()
     db.refresh(invoice)
-    return invoice_as_api(invoice)
+    result = invoice_as_api(invoice)
+    email_sent = _send_invoice_email(org, invoice)
+    result["emailed"] = email_sent
+    return result
 
 
 def update_invoice_status(db: Session, org: Organisation, member: OrgMember, invoice_id: str, status: str) -> dict:
@@ -1538,7 +1996,12 @@ def update_invoice_status(db: Session, org: Organisation, member: OrgMember, inv
     invoice.status = status
     db.commit()
     db.refresh(invoice)
-    return invoice_as_api(invoice)
+    sent = status == "sent"
+    if sent:
+        _send_invoice_email(org, invoice)
+    result = invoice_as_api(invoice)
+    result["emailed"] = sent
+    return result
 
 
 def delete_invoice(db: Session, org: Organisation, member: OrgMember, invoice_id: str) -> dict:

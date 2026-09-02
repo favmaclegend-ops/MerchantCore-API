@@ -21,6 +21,7 @@ class OrgEmployee(Base, BaseMixin, OrgScopedMixin, TimestampMixin):
 
     name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False)
+    user_id = Column(String(36), index=True, nullable=True)
     phone = Column(String(50), nullable=True)
     department = Column(String(100), nullable=False)
     job_title = Column(String(100), nullable=True)
@@ -100,7 +101,27 @@ class OrgAttendance(Base, BaseMixin, OrgScopedMixin, TimestampMixin):
     employee_name = Column(String(255), nullable=False)
     date = Column(String(20), nullable=False)  # YYYY-MM-DD
     check_in = Column(String(10), nullable=True)  # HH:MM
+    check_out = Column(String(10), nullable=True)  # HH:MM
+    check_in_method = Column(String(20), nullable=True, default="manual")  # qr|manual
+    check_out_method = Column(String(20), nullable=True, default="manual")  # qr|manual
     status = Column(String(20), nullable=False, default="present")
+
+
+class AttendanceToken(Base, BaseMixin, OrgScopedMixin, TimestampMixin):
+    """A short-lived, single-use token used to confirm an employee's presence.
+
+    The token is generated on the HRM/admin terminal (shown as a QR code) and
+    redeemed when the employee scans it from their own authenticated account.
+    """
+
+    __tablename__ = "attendance_tokens"
+
+    token = Column(String(128), nullable=False, unique=True)
+    employee_id = Column(String(36), nullable=False)
+    employee_name = Column(String(255), nullable=False)
+    action = Column(String(20), nullable=False)  # in|out
+    expires_at = Column(String(40), nullable=False)  # ISO timestamp
+    used = Column(String(20), nullable=True)  # set when redeemed
 
 
 class OrgReview(Base, BaseMixin, OrgScopedMixin, TimestampMixin):

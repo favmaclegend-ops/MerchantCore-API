@@ -31,6 +31,7 @@ class OrgMember(Base, BaseMixin, TimestampMixin):
     )
 
     org_id = Column(String(36), index=True, nullable=False)
+    user_id = Column(String(36), index=True, nullable=True)
     email = Column(String(255), index=True, nullable=False)
     username = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
@@ -57,6 +58,7 @@ class OrgMember(Base, BaseMixin, TimestampMixin):
             "phone": self.phone or "",
             "role": self.role,
             "jobTitle": self.job_title or "",
+            "userId": self.user_id or "",
             "isActive": self.is_active,
             "dataBlocked": self.data_blocked,
             "disabled": self.disabled,

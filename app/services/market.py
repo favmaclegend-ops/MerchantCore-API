@@ -479,6 +479,26 @@ def complete_order(
     app_db.add(txn)
     app_db.flush()
 
+    # Record the net (tax-exclusive) sale revenue in the org ledger and accrue
+    # the collected VAT into the org's tax compliance obligations. This keeps
+    # market orders wired into the Finance & Accounting module.
+    from app.services.org_ui import _post_ledger, accrue_sales_tax
+
+    from app.models.organisation import Organisation
+
+    org = app_db.query(Organisation).get(org_id)
+    if org is not None:
+        _post_ledger(
+            app_db,
+            org,
+            category="income",
+            account="Market Sales",
+            description=f"Market order {order.id[:8]} from {order.buyer_name}",
+            amount=order.subtotal,
+            reference=f"MK-{order.id[:8]}",
+        )
+        accrue_sales_tax(app_db, org, net=order.subtotal, tax=order.tax)
+
     create_notification(
         app_db,
         org_id=org_id,

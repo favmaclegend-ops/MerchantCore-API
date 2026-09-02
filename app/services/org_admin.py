@@ -99,13 +99,44 @@ def list_members(
     }
 
 
+def list_available_users(db: Session, org: Organisation, member: OrgMember, search: str | None = None) -> dict[str, Any]:
+    """List global User accounts the admin can select when adding a member.
+
+    Excludes users already linked to a member (or the org owner) of this org.
+    """
+    require_manager(member)
+    from app.models.user import User
+
+    used_emails = {
+        m.email.lower() for m in db.query(OrgMember).filter(OrgMember.org_id == org.id).all()
+    }
+    used_emails.add(org.business_email.lower())
+
+    query = db.query(User)
+    if search:
+        like = f"%{search.lower()}%"
+        query = query.filter(User.full_name.ilike(like) | User.email.ilike(like) | User.username.ilike(like))
+    rows = query.order_by(User.full_name).all()
+    users = [
+        {
+            "id": u.id,
+            "name": u.full_name,
+            "email": u.email,
+            "username": u.username,
+        }
+        for u in rows
+        if u.email.lower() not in used_emails
+    ]
+    return {"users": users, "total": len(users)}
+
+
 def add_member(
-    db: Session, org: Organisation, member: OrgMember, email: str, role: str, job_title: str | None, password: str | None = None
+    db: Session, org: Organisation, member: OrgMember, email: str, role: str, job_title: str | None, password: str | None = None, user_id: str | None = None
 ) -> dict[str, Any]:
     require_manager(member)
     if role not in ASSIGNABLE_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
-    created = invite_member(db, org, email, role, job_title, password)
+    created = invite_member(db, org, email, role, job_title, password, user_id)
     return created.as_api
 
 
