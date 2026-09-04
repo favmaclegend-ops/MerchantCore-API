@@ -37,6 +37,7 @@ from app.models.org_hrm import (
     review_rating,
 )
 from app.models.org_notification import OrgNotification
+from app.db.service_orders import ServiceOrderModel
 from app.models.org_supply import OrgPurchaseOrder, OrgShipment, OrgSupplier
 from app.models.organisation import Organisation, OrgMember
 from app.services.org_notification import create_notification
@@ -2213,22 +2214,41 @@ def org_dashboard(db: Session, org: Organisation, member: OrgMember) -> dict:
     )
     credit = db.query(OrgCreditEntry).filter(OrgCreditEntry.org_id == org.id).all()
     notifications = db.query(OrgNotification).filter(OrgNotification.org_id == org.id).count()
-    a = sum(t.amount for t in sales if t.status == "completed")
-    revenue = round(a, 2)
+    service_orders = (
+        db.query(ServiceOrderModel).filter(ServiceOrderModel.org_id == org.id).all()
+    )
+    # Revenue is sourced from the general ledger (append-only / permanent) rather
+    # than recomputed live from POS + service-order rows. This keeps the dashboard
+    # total stable even when a completed service order is later deleted or
+    # cancelled — the income already booked in the ledger is never removed.
+    REVENUE_ACCOUNTS = {"POS Sales", "Service Sales"}
+    revenue_entries = (
+        db.query(OrgLedgerEntry)
+        .filter(
+            OrgLedgerEntry.org_id == org.id,
+            OrgLedgerEntry.category == "income",
+            OrgLedgerEntry.account.in_(REVENUE_ACCOUNTS),
+        )
+        .all()
+    )
+    revenue = round(sum(_float(e.amount) for e in revenue_entries), 2)
+    # Service-revenue figure (for the services tab) counts only Service Sales from
+    # the ledger so it stays aligned with the aggregated total and is permanent too.
+    service_income = round(
+        sum(_float(e.amount) for e in revenue_entries if e.account == "Service Sales"),
+        2,
+    )
     pending_payroll = (
         db.query(OrgPayrollRun).filter(OrgPayrollRun.org_id == org.id, OrgPayrollRun.status == "pending").count()
     )
 
-    # Last 30 days revenue trend, bucketed by day. created_at is stored as a
-    # naive UTC datetime, so compare against a naive cutoff (an aware cutoff
-    # would raise on >= vs the naive column values).
+    # Last 30 days revenue trend, bucketed by day using the ledger entry dates.
     cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=30)
-
-    recent = [t for t in sales if t.created_at and t.created_at >= cutoff and t.status == "completed"]
     buckets: dict[str, float] = {}
-    for t in recent:
-        day = t.created_at.date().isoformat()
-        buckets[day] = buckets.get(day, 0.0) + t.amount
+    for e in revenue_entries:
+        day = e.date
+        if day and day >= cutoff.strftime("%Y-%m-%d"):
+            buckets[day] = buckets.get(day, 0.0) + _float(e.amount)
     days = [(cutoff + timedelta(days=i)).date().isoformat() for i in range(31)]
     revenue_trend = [{"date": day, "revenue": round(buckets.get(day, 0.0), 2)} for day in days]
 
@@ -2246,6 +2266,8 @@ def org_dashboard(db: Session, org: Organisation, member: OrgMember) -> dict:
         "stats": {
             "totalRevenue": revenue,
             "totalSales": len(sales),
+            "serviceOrders": len(service_orders),
+            "serviceIncome": round(service_income, 2),
             "productsCount": len(products),
             "customersCount": len(customers),
             "employeesCount": len(employees),

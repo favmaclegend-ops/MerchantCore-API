@@ -5,9 +5,12 @@ and its Super Admin member, then emails a hashed, expiring verification code.
 No member (including the creator) can log in until the organisation is verified.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
-
+from app.db.org_services import ServiceCreateSchema, OrgServiceModel
+from app.db.service_orders import ServiceOrderModel, ServiceOrderCreateSchema
+import uuid
+from datetime import UTC, datetime
 from app.core.security import (
     MAX_OTP_ATTEMPTS,
     generate_otp,
@@ -16,10 +19,14 @@ from app.core.security import (
     hash_otp,
     otp_is_expired,
     otp_matches,
+    get_current_member
 )
+from app.core.permissions import require_admin
 from app.db.session import get_db
 from app.models.organisation import Organisation, OrgMember
 from app.services.email import EmailNotConfiguredError, send_email
+from app.services.org_notification import create_notification
+from app.services.org_ui import _post_ledger
 from app.services.org_user import login_organisation
 from app.services.rate_limiter import can_send, record_send, remaining_seconds
 
@@ -201,3 +208,231 @@ def org_login(body: dict, db: Session = Depends(get_db)) -> dict:
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
     return login_organisation(db, email, password)
+
+@router.post("/org_services", response_model=dict)
+def create_service(service_data: ServiceCreateSchema, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    require_admin(req_user)
+    try:
+        org_id = req_user.org_id
+        
+        new_service = OrgServiceModel(
+            organization_id=org_id, 
+            name=service_data.name, 
+            category=service_data.category, 
+            pricing_type=service_data.pricing_type,
+            price=float(service_data.price),
+            service_id=str(uuid.uuid4()),
+            description=service_data.description,
+            service_img=service_data.service_img,
+            status=service_data.status,
+            rate=float(service_data.rate),
+        )
+        
+        db.add(new_service)
+        db.commit()
+        db.refresh(new_service)
+        create_notification(
+            db,
+            org_id=req_user.org_id,
+            kind="service",
+            title="Service added to catalog",
+            message=f"New service: {service_data.name} (category {service_data.category})",
+            severity="info",
+            amount=float(service_data.price),
+            ref=new_service.service_id,
+            actor_name=req_user.full_name,
+            actor_role=req_user.role,
+        )
+        return {"message": "Service created successfully", "service_id": new_service.id}
+    except Exception as e:
+        print("[server]An error occur while saving the new service:", e)
+        return {"message": "Failed to create service", "error": str(e)}
+    
+@router.get("/get_org_services")
+def get_org_service(req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    org_id = req_user.org_id
+    services = db.query(OrgServiceModel).filter(OrgServiceModel.organization_id == org_id).all()
+    return services
+
+@router.patch("/org_services/{service_id}", response_model=dict)
+def update_service(service_id: str, body: dict, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    require_admin(req_user)
+    try:
+        service = db.query(OrgServiceModel).filter(
+            OrgServiceModel.service_id == service_id,
+            OrgServiceModel.organization_id == req_user.org_id,
+        ).first()
+        if not service:
+            return {"message": "Service not found"}
+
+        if "status" in body:
+            service.status = body["status"]
+        if "isCompleted" in body:
+            service.isCompleted = body["isCompleted"]
+        if "completed_at" in body:
+            service.completed_at = body["completed_at"]
+        if "name" in body:
+            service.name = body["name"]
+        if "price" in body:
+            service.price = float(body["price"])
+        if "category" in body:
+            service.category = body["category"]
+        if "description" in body:
+            service.description = body["description"]
+        if "is_pinned" in body:
+            service.is_pinned = bool(body["is_pinned"])
+
+        db.commit()
+        db.refresh(service)
+        return {"message": "Service updated", "service_id": service.service_id}
+    except Exception as e:
+        print("[server] Error updating service:", e)
+        return {"message": "Failed to update service", "error": str(e)}
+
+@router.patch("/org_services/{service_id}/pin", response_model=dict)
+def toggle_service_pin(service_id: str, body: dict, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    try:
+        service = db.query(OrgServiceModel).filter(
+            OrgServiceModel.service_id == service_id,
+            OrgServiceModel.organization_id == req_user.org_id,
+        ).first()
+        if not service:
+            return {"message": "Service not found"}
+
+        if "is_pinned" in body:
+            service.is_pinned = bool(body["is_pinned"])
+
+        db.commit()
+        db.refresh(service)
+        return {"message": "Service updated", "service_id": service.service_id, "is_pinned": service.is_pinned}
+    except Exception as e:
+        print("[server] Error updating service pin:", e)
+        return {"message": "Failed to update service", "error": str(e)}
+
+@router.delete("/org_services/{service_id}", response_model=dict)
+def delete_service(service_id: str, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    require_admin(req_user)
+    try:
+        service = db.query(OrgServiceModel).filter(
+            OrgServiceModel.service_id == service_id,
+            OrgServiceModel.organization_id == req_user.org_id,
+        ).first()
+        if not service:
+            return {"message": "Service not found"}
+
+        db.delete(service)
+        db.commit()
+        return {"message": "Service deleted", "service_id": service_id}
+    except Exception as e:
+        print("[server] Error deleting service:", e)
+        return {"message": "Failed to delete service", "error": str(e)}
+
+
+# ── Service Orders ──────────────────────────────────────────────────
+
+@router.post("/service_orders", response_model=dict)
+def create_service_order(order_data: ServiceOrderCreateSchema, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    try:
+        new_order = ServiceOrderModel(
+            org_id=req_user.org_id,
+            order_id=str(uuid.uuid4()),
+            service_id=order_data.service_id,
+            service_name=order_data.service_name,
+            customer_id=order_data.customer_id or "",
+            customer_name=order_data.customer_name,
+            price=float(order_data.price),
+            pricing_type=order_data.pricing_type,
+            category=order_data.category or "",
+            status="active",
+        )
+        db.add(new_order)
+        db.commit()
+        db.refresh(new_order)
+        create_notification(
+            db,
+            org_id=req_user.org_id,
+            kind="service",
+            title="New service order rendered",
+            message=f"{order_data.service_name} rendered for {order_data.customer_name} at {order_data.price}",
+            severity="info",
+            amount=float(order_data.price),
+            ref=new_order.order_id,
+            actor_name=req_user.full_name,
+            actor_role=req_user.role,
+        )
+        return {"message": "Service order created", "order_id": new_order.order_id}
+    except Exception as e:
+        print("[server] Error creating service order:", e)
+        return {"message": "Failed to create service order", "error": str(e)}
+
+@router.get("/service_orders")
+def get_service_orders(req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    orders = db.query(ServiceOrderModel).filter(ServiceOrderModel.org_id == req_user.org_id).all()
+    return orders
+
+@router.patch("/service_orders/{order_id}", response_model=dict)
+def update_service_order(order_id: str, body: dict, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    try:
+        order = db.query(ServiceOrderModel).filter(
+            ServiceOrderModel.order_id == order_id,
+            ServiceOrderModel.org_id == req_user.org_id,
+        ).first()
+        if not order:
+            return {"message": "Order not found"}
+
+        was_completed = order.status == "completed"
+
+        if "status" in body:
+            order.status = body["status"]
+        if "completed_at" in body:
+            order.completed_at = body["completed_at"]
+
+        if order.status == "completed" and not was_completed:
+            order.completed_at = order.completed_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+            org = db.query(Organisation).filter(Organisation.id == req_user.org_id).first()
+            _post_ledger(
+                db,
+                org,
+                category="income",
+                account="Service Sales",
+                description=f"Service order completed: {order.service_name} for {order.customer_name}",
+                amount=order.price,
+                reference=order.order_id,
+            )
+            create_notification(
+                db,
+                org_id=req_user.org_id,
+                kind="service",
+                title="Service order completed",
+                message=f"Order for {order.service_name} ({order.customer_name}) completed at {order.price}",
+                severity="success",
+                amount=order.price,
+                ref=order.order_id,
+                actor_name=req_user.full_name,
+                actor_role=req_user.role,
+            )
+
+        db.commit()
+        db.refresh(order)
+        return {"message": "Order updated", "order_id": order.order_id}
+    except Exception as e:
+        print("[server] Error updating service order:", e)
+        return {"message": "Failed to update order", "error": str(e)}
+
+@router.delete("/service_orders/{order_id}", response_model=dict)
+def delete_service_order(order_id: str, req_user: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)):
+    require_admin(req_user)
+    try:
+        order = db.query(ServiceOrderModel).filter(
+            ServiceOrderModel.order_id == order_id,
+            ServiceOrderModel.org_id == req_user.org_id,
+        ).first()
+        if not order:
+            return {"message": "Order not found"}
+
+        db.delete(order)
+        db.commit()
+        return {"message": "Order deleted", "order_id": order_id}
+    except Exception as e:
+        print("[server] Error deleting service order:", e)
+        return {"message": "Failed to delete order", "error": str(e)}

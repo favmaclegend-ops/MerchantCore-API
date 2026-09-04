@@ -50,6 +50,8 @@ from app.models import (  # noqa: F401
     User,
 )
 from app.models.chat import ChatMessage, ChatThread, ChatUserKey  # noqa: F401
+from app.db.org_services import OrgServiceModel  # noqa: F401
+from app.db.service_orders import ServiceOrderModel  # noqa: F401
 from app.routers import (
     auth,
     chat,
@@ -231,6 +233,24 @@ def _ensure_shipment_market_columns(engine) -> None:
         pass
 
 
+def _ensure_org_service_pinned_column(engine) -> None:
+    """Add the ``is_pinned`` column to existing ``org_services`` tables.
+
+    ``create_all`` never alters existing tables, so services created before the
+    pin-to-dashboard feature are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        if "org_services" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("org_services")}
+        if "is_pinned" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE org_services ADD COLUMN is_pinned BOOLEAN NOT NULL DEFAULT 0"))
+    except Exception:
+        pass
+
+
 def _backfill_pos_ledger() -> None:
     """One-time idempotent backfill: mirror completed POS sales into the ledger.
 
@@ -365,6 +385,7 @@ async def startup() -> None:
     _ensure_user_id_columns(engine)
     _ensure_notification_visibility_columns(engine)
     _ensure_shipment_market_columns(engine)
+    _ensure_org_service_pinned_column(engine)
     _backfill_pos_ledger()
 
     market_db_url = settings.MARKET_DATABASE_URL

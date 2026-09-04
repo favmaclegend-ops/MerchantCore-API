@@ -178,11 +178,11 @@ def get_current_member(authorization: str = Header(...), db: Session = Depends(g
 def get_current_org(member: OrgMember = Depends(get_current_member), db: Session = Depends(get_db)) -> Organisation:
     org = db.query(Organisation).filter(Organisation.id == member.org_id).first()
     if not org:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="organization not found")
     return org
 
 
 def ensure_org_matches(member: OrgMember, org_id: str) -> None:
     """Guard used by org-scoped routes so a token can never read another tenant."""
     if member.org_id != org_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised for this organisation")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this organization")

@@ -24,10 +24,16 @@ OPERATIONAL_ROLES = MANAGED_ROLES | {"staff"}
 
 OWNER_ROLE = "super-admin"
 
+ADMIN_ROLES = {"super-admin", "admin"}
+
 
 def require_role(member: OrgMember, *allowed: str) -> None:
     if member.role not in allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions for this action")
+
+
+def require_admin(member: OrgMember) -> None:
+    require_role(member, *ADMIN_ROLES)
 
 
 def require_manager(member: OrgMember) -> None:
