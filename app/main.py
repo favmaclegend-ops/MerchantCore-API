@@ -148,6 +148,30 @@ def _ensure_market_service_rating_columns(engine) -> None:
         pass
 
 
+def _ensure_market_service_request_columns(engine) -> None:
+    """Add email/address/user link columns to existing ``market_service_requests``.
+
+    ``create_all`` never alters existing tables, so requests created before the
+    inbox feature are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        if "market_service_requests" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("market_service_requests")}
+        additions = {
+            "requester_email": "ADD COLUMN requester_email VARCHAR(255) NULL",
+            "requester_address": "ADD COLUMN requester_address VARCHAR(500) NULL",
+            "user_id": "ADD COLUMN user_id VARCHAR(36) NULL",
+        }
+        with engine.begin() as conn:
+            for name, ddl in additions.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE market_service_requests {ddl}"))
+    except Exception:
+        pass
+
+
 def _ensure_org_invoice_columns(engine) -> None:
     """Add customer linkage columns to existing ``org_invoices`` tables.
 
@@ -434,6 +458,7 @@ async def startup() -> None:
     _ensure_market_source_id_column(market_engine)
     _ensure_market_order_delivery_columns(market_engine)
     _ensure_market_service_rating_columns(market_engine)
+    _ensure_market_service_request_columns(market_engine)
 
     # --- Chat database (encrypted conversations) -----------------------------
     chat_db_url = settings.CHAT_DATABASE_URL

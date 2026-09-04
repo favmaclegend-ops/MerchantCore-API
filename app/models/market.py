@@ -116,6 +116,11 @@ class MarketServiceRequest(MarketBase, BaseMixin, TimestampMixin):
     page.  The org can view and respond to requests via the org dashboard.
     ``status`` tracks the lifecycle: ``new`` → ``responded`` → ``completed``
     or ``cancelled``.
+
+    When a logged-in buyer submits a request, ``user_id`` links it to their
+    personal account so the org's response can be delivered into their in-app
+    inbox (end-to-end encrypted). ``email`` and ``address`` are captured for
+    information so the org can follow up.
     """
 
     __tablename__ = "market_service_requests"
@@ -126,6 +131,9 @@ class MarketServiceRequest(MarketBase, BaseMixin, TimestampMixin):
 
     requester_name = Column(String(255), nullable=False)
     requester_phone = Column(String(50), nullable=False)
+    requester_email = Column(String(255), nullable=True)
+    requester_address = Column(String(500), nullable=True)
+    user_id = Column(String(36), nullable=True, index=True)
     note = Column(Text, nullable=True)
 
     status = Column(String(20), nullable=False, default="new", index=True)
@@ -134,6 +142,36 @@ class MarketServiceRequest(MarketBase, BaseMixin, TimestampMixin):
 
     service = relationship("MarketService")
     shop = relationship("MarketShop")
+
+
+class CustomerInboxMessage(MarketBase, BaseMixin, TimestampMixin):
+    """A one-way E2E-encrypted message delivered to a customer's inbox.
+
+    The customer (a personal user) receives messages when an organisation
+    responds to their service requests. There is no chat exchange back — each
+    message is independent and encrypted end-to-end.
+
+    Encryption follows the chat scheme: a fresh AES-256 key is generated per
+    message, wrapped under the recipient's RSA public key (``wrapped_key``), and
+    the body is stored as AES-256-GCM ``ciphertext`` + ``iv``. Only the
+    recipient (who holds the matching private key on their client) can decrypt.
+    """
+
+    __tablename__ = "customer_inbox_messages"
+
+    user_id = Column(String(36), nullable=False, index=True)
+    org_id = Column(String(36), nullable=False, index=True)
+    org_name = Column(String(255), nullable=True)
+    service_request_id = Column(String(36), index=True)
+    service_name = Column(String(255), nullable=True)
+    subject = Column(String(255), nullable=True)
+
+    wrapped_key = Column(Text, nullable=False)
+    ciphertext = Column(Text, nullable=False)
+    iv = Column(String(64), nullable=False)
+
+    status = Column(String(20), nullable=False, default="unread", index=True)
+    sent_at = Column(DateTime, nullable=False)
 
 
 class MarketAdvert(MarketBase, BaseMixin, TimestampMixin):

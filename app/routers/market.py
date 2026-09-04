@@ -182,7 +182,11 @@ def create_service_request(
     body: Annotated[dict, Body()],
     db: MarketDb,
 ) -> dict:
-    """Public — a visitor requests a service from a shop."""
+    """Public — a visitor requests a service from a shop.
+
+    A logged-in buyer also supplies ``user_id`` so the org's response can be
+    delivered into their encrypted in-app inbox.
+    """
     name = (body.get("requester_name") or "").strip()
     phone = (body.get("requester_phone") or "").strip()
     if not name or not phone:
@@ -192,6 +196,9 @@ def create_service_request(
         service_id=service_id,
         requester_name=name,
         requester_phone=phone,
+        requester_email=(body.get("requester_email") or "").strip() or None,
+        requester_address=(body.get("requester_address") or "").strip() or None,
+        user_id=(body.get("user_id") or "").strip() or None,
         note=(body.get("note") or "").strip() or None,
     )
 
@@ -339,3 +346,22 @@ def delete_org_order(order_id: str, db: MarketDb, member: MemberDep) -> dict:
     order = market._load_order(db, order_id)
     market._load_shop(db, order.shop_id, member.org_id)
     return market.delete_order(db, order_id)
+
+
+# ---------------------------------------------------------------------------
+# Customer inbox (buyer = personal user JWT)
+# ---------------------------------------------------------------------------
+
+@router.get("/inbox")
+def customer_inbox(db: MarketDb, user: UserDep) -> dict:
+    return market.list_customer_inbox(db, user_id=user.id)
+
+
+@router.get("/inbox/unread")
+def customer_inbox_unread(db: MarketDb, user: UserDep) -> dict:
+    return {"unread": market.unread_customer_inbox_count(db, user_id=user.id)}
+
+
+@router.put("/inbox/{message_id}/read")
+def read_inbox_message(message_id: str, db: MarketDb, user: UserDep) -> dict:
+    return market.mark_inbox_read(db, user_id=user.id, message_id=message_id)

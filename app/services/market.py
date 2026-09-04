@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.market import (
     MarketAdvert,
     MarketCategory,
+    CustomerInboxMessage,
     MarketOrder,
     MarketProduct,
     MarketProductImage,
@@ -738,6 +739,9 @@ def _service_request_api(req: MarketServiceRequest, service_name: str | None = N
         "shop_name": shop_name,
         "requester_name": req.requester_name,
         "requester_phone": req.requester_phone,
+        "requester_email": req.requester_email,
+        "requester_address": req.requester_address,
+        "user_id": req.user_id,
         "note": req.note,
         "status": req.status,
         "response": req.response,
@@ -752,9 +756,16 @@ def create_service_request(
     service_id: str,
     requester_name: str,
     requester_phone: str,
+    requester_email: str | None = None,
+    requester_address: str | None = None,
+    user_id: str | None = None,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Public endpoint — a visitor requests a service from a shop."""
+    """Public endpoint — a visitor requests a service from a shop.
+
+    When a logged-in buyer submits (``user_id`` set), the org's later response
+    is delivered into the buyer's encrypted in-app inbox.
+    """
     service = db.query(MarketService).filter(MarketService.id == service_id).first()
     if not service:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
@@ -773,6 +784,9 @@ def create_service_request(
         org_id=org_id,
         requester_name=requester_name,
         requester_phone=requester_phone,
+        requester_email=requester_email,
+        requester_address=requester_address,
+        user_id=user_id,
         note=note,
         status="new",
     )
@@ -843,7 +857,11 @@ def respond_to_service_request(
     response_text: str,
     new_status: str = "responded",
 ) -> dict[str, Any]:
-    """Org responds to a service request.  Only the owning org can respond."""
+    """Org responds to a service request.  Only the owning org can respond.
+
+    When the request came from a logged-in buyer, the response is delivered
+    into their encrypted in-app inbox (end-to-end encrypted).
+    """
     req = db.query(MarketServiceRequest).filter(MarketServiceRequest.id == request_id).first()
     if not req:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
@@ -858,4 +876,127 @@ def respond_to_service_request(
 
     service = db.query(MarketService).filter(MarketService.id == req.service_id).first()
     shop = db.query(MarketShop).filter(MarketShop.id == req.shop_id).first()
+
+    # Deliver E2E-encrypted copy into the buyer's inbox when they are a
+    # logged-in user with a registered encryption public key.
+    if req.user_id:
+        try:
+            _deliver_inbox_message(
+                db,
+                user_id=req.user_id,
+                org_id=org_id,
+                org_name=shop.shop_name if shop else None,
+                service_request_id=req.id,
+                service_name=service.name if service else None,
+                subject=f"Response to \"{service.name if service else 'your service request'}\"",
+                body=response_text,
+            )
+        except Exception:
+            pass
+
     return _service_request_api(req, service.name if service else None, shop.shop_name if shop else None)
+
+
+def _deliver_inbox_message(
+    db: Session,
+    *,
+    user_id: str,
+    org_id: str,
+    org_name: str | None,
+    service_request_id: str,
+    service_name: str | None,
+    subject: str | None,
+    body: str,
+) -> dict[str, Any]:
+    """Encrypt ``body`` for ``user_id`` and store it as an inbox message.
+
+    Uses the chat public-key registry (``user:<id>``) so the buyer's client-side
+    private key can decrypt. The buyer must have registered a public key for the
+    message to be deliverable.
+    """
+    from app.core import chat_crypto
+    from app.db.chat_session import ChatSessionLocal
+    from app.services.chat_keys import get_public_key
+
+    participant_key = f"user:{user_id}"
+    chat_db = ChatSessionLocal()
+    try:
+        public_key = get_public_key(chat_db, participant_key)
+    finally:
+        chat_db.close()
+    if not public_key:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer has no encryption key")
+
+    thread_key = chat_crypto.new_key()
+    wrapped_key = chat_crypto.wrap_secret(public_key, thread_key)
+    ciphertext, iv = chat_crypto.encrypt_payload(thread_key, body)
+
+    msg = CustomerInboxMessage(
+        user_id=user_id,
+        org_id=org_id,
+        org_name=org_name,
+        service_request_id=service_request_id,
+        service_name=service_name,
+        subject=subject,
+        wrapped_key=wrapped_key,
+        ciphertext=ciphertext,
+        iv=iv,
+        status="unread",
+        sent_at=datetime.now(UTC),
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    return _inbox_api(msg)
+
+
+def _inbox_api(msg: CustomerInboxMessage) -> dict[str, Any]:
+    return {
+        "id": msg.id,
+        "user_id": msg.user_id,
+        "org_id": msg.org_id,
+        "org_name": msg.org_name,
+        "service_request_id": msg.service_request_id,
+        "service_name": msg.service_name,
+        "subject": msg.subject,
+        "wrapped_key": msg.wrapped_key,
+        "ciphertext": msg.ciphertext,
+        "iv": msg.iv,
+        "status": msg.status,
+        "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
+    }
+
+
+def list_customer_inbox(
+    db: Session,
+    user_id: str,
+) -> dict[str, Any]:
+    """Return all inbox messages for a buyer, newest first."""
+    rows = (
+        db.query(CustomerInboxMessage)
+        .filter(CustomerInboxMessage.user_id == user_id)
+        .order_by(CustomerInboxMessage.sent_at.desc())
+        .all()
+    )
+    return {"messages": [_inbox_api(m) for m in rows], "total": len(rows)}
+
+
+def unread_customer_inbox_count(db: Session, user_id: str) -> int:
+    return (
+        db.query(CustomerInboxMessage)
+        .filter(CustomerInboxMessage.user_id == user_id, CustomerInboxMessage.status == "unread")
+        .count()
+    )
+
+
+def mark_inbox_read(db: Session, user_id: str, message_id: str) -> dict[str, Any]:
+    msg = db.query(CustomerInboxMessage).filter(
+        CustomerInboxMessage.id == message_id,
+        CustomerInboxMessage.user_id == user_id,
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    msg.status = "read"
+    db.commit()
+    db.refresh(msg)
+    return _inbox_api(msg)
