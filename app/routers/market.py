@@ -60,6 +60,37 @@ def get_product(product_id: str, db: MarketDb) -> dict:
     return market.get_product(db, product_id)
 
 
+@router.get("/services")
+def list_services(
+    db: MarketDb,
+    search: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(60, ge=1, le=100),
+) -> dict:
+    return market.list_services(db, search=search, page=page, limit=limit)
+
+
+@router.get("/services/{service_id}")
+def get_service(service_id: str, db: MarketDb) -> dict:
+    return market.get_service(db, service_id)
+
+
+@router.put("/services/{service_id}/rate")
+def rate_service(
+    service_id: str,
+    body: Annotated[dict, Body()],
+    db: MarketDb,
+) -> dict:
+    stars = body.get("stars")
+    rater = body.get("rater")
+    return market.rate_service(
+        db,
+        service_id=service_id,
+        stars=float(stars) if stars is not None else 0,
+        rater_key=str(rater or ""),
+    )
+
+
 @router.get("/advert")
 def list_adverts(db: MarketDb) -> list[dict]:
     return market.list_adverts(db)
@@ -123,6 +154,75 @@ def update_product(
 def delete_product(product_id: str, db: MarketDb, member: MemberDep) -> dict:
     market.delete_product(db, product_id=product_id, owner_id=_owner_key(member))
     return {"message": "Product deleted"}
+
+
+@router.post("/shops/{shop_id}/services")
+def create_service(
+    shop_id: str,
+    body: Annotated[dict, Body()],
+    db: MarketDb,
+    member: MemberDep,
+) -> dict:
+    return market.create_service(db, shop_id=shop_id, owner_id=_owner_key(member), data=body)
+
+
+@router.delete("/services/{service_id}")
+def delete_service(service_id: str, db: MarketDb, member: MemberDep) -> dict:
+    market.delete_service(db, service_id=service_id, owner_id=_owner_key(member))
+    return {"message": "Service removed from market"}
+
+
+# ---------------------------------------------------------------------------
+# Service requests (customer → org)
+# ---------------------------------------------------------------------------
+
+@router.post("/services/{service_id}/requests")
+def create_service_request(
+    service_id: str,
+    body: Annotated[dict, Body()],
+    db: MarketDb,
+) -> dict:
+    """Public — a visitor requests a service from a shop."""
+    name = (body.get("requester_name") or "").strip()
+    phone = (body.get("requester_phone") or "").strip()
+    if not name or not phone:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name and phone are required")
+    return market.create_service_request(
+        db,
+        service_id=service_id,
+        requester_name=name,
+        requester_phone=phone,
+        note=(body.get("note") or "").strip() or None,
+    )
+
+
+@router.get("/services/requests/org")
+def org_service_requests(
+    db: MarketDb,
+    member: MemberDep,
+    status: str | None = Query(None),
+) -> dict:
+    return market.list_org_service_requests(db, org_id=member.org_id, status_filter=status)
+
+
+@router.put("/services/requests/{request_id}/respond")
+def respond_to_service_request(
+    request_id: str,
+    body: Annotated[dict, Body()],
+    db: MarketDb,
+    member: MemberDep,
+) -> dict:
+    response_text = (body.get("response") or "").strip()
+    if not response_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Response text is required")
+    new_status = body.get("status") or "responded"
+    return market.respond_to_service_request(
+        db,
+        request_id=request_id,
+        org_id=member.org_id,
+        response_text=response_text,
+        new_status=new_status,
+    )
 
 
 # ---------------------------------------------------------------------------

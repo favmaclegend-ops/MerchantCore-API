@@ -76,6 +76,66 @@ class MarketProductVariant(MarketBase, BaseMixin):
     product = relationship("MarketProduct", back_populates="variants")
 
 
+class MarketService(MarketBase, BaseMixin, TimestampMixin):
+    """A service listing uploaded by an organisation to the market.
+
+    Stored in the market database, tied to the owning ``MarketShop`` via
+    ``shop_id`` and to the underlying org service via ``source_id``. An image
+    (``image_url``) is required before a service can be listed — enforced in
+    the service layer. ``offer`` is optional promotional copy, ``rating``
+    drives the star rating shown on the service card.
+    """
+
+    __tablename__ = "market_services"
+    __table_args__ = (
+        UniqueConstraint(
+            "shop_id",
+            "source_id",
+            name="uq_market_service_source",
+        ),
+    )
+
+    shop_id = Column(String(36), ForeignKey("market_shops.id"), nullable=False, index=True)
+    source_id = Column(String(255), nullable=True, index=True)
+    name = Column(String(255), nullable=False)
+    price = Column(Float, nullable=False, default=0)
+    offer = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    image_url = Column(String(1000), nullable=False)
+    rating = Column(Float, nullable=False, default=0)
+    _rating_count = Column(Integer, nullable=False, default=0)
+    _rating_tallies = Column(Text, nullable=True)
+
+    shop = relationship("MarketShop")
+
+
+class MarketServiceRequest(MarketBase, BaseMixin, TimestampMixin):
+    """A customer request for a service listed on the market.
+
+    Created when a visitor clicks "Request for Service" on a service detail
+    page.  The org can view and respond to requests via the org dashboard.
+    ``status`` tracks the lifecycle: ``new`` → ``responded`` → ``completed``
+    or ``cancelled``.
+    """
+
+    __tablename__ = "market_service_requests"
+
+    service_id = Column(String(36), ForeignKey("market_services.id"), nullable=False, index=True)
+    shop_id = Column(String(36), ForeignKey("market_shops.id"), nullable=False, index=True)
+    org_id = Column(String(36), nullable=False, index=True)
+
+    requester_name = Column(String(255), nullable=False)
+    requester_phone = Column(String(50), nullable=False)
+    note = Column(Text, nullable=True)
+
+    status = Column(String(20), nullable=False, default="new", index=True)
+    response = Column(Text, nullable=True)
+    responded_at = Column(DateTime, nullable=True)
+
+    service = relationship("MarketService")
+    shop = relationship("MarketShop")
+
+
 class MarketAdvert(MarketBase, BaseMixin, TimestampMixin):
     __tablename__ = "market_adverts"
 

@@ -18,6 +18,8 @@ from app.models.market import (
     MarketProduct,
     MarketProductImage,
     MarketProductVariant,
+    MarketService,
+    MarketServiceRequest,
     MarketShop,
 )
 
@@ -73,6 +75,22 @@ def _product_api(p: MarketProduct) -> dict[str, Any]:
 
 def _product_image_api(img: MarketProductImage) -> dict[str, Any]:
     return {"id": img.id, "image_url": img.image_url, "sort_order": img.sort_order}
+
+
+def _service_api(s: MarketService, shop_name: str | None = None) -> dict[str, Any]:
+    return {
+        "id": s.id,
+        "shop_id": s.shop_id,
+        "shop_name": shop_name,
+        "source_id": s.source_id,
+        "name": s.name,
+        "price": s.price,
+        "offer": s.offer,
+        "description": s.description,
+        "image_url": s.image_url,
+        "rating": s.rating,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
 
 
 def _advert_api(a: MarketAdvert) -> dict[str, Any]:
@@ -143,6 +161,71 @@ def get_product(db: Session, product_id: str) -> dict[str, Any]:
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
     return _product_api(product)
+
+
+def list_services(db: Session, search: str | None = None, page: int = 1, limit: int = 60) -> dict[str, Any]:
+    q = db.query(MarketService)
+    if search and search.strip():
+        term = f"%{search.strip().lower()}%"
+        q = q.filter(
+            MarketService.name.ilike(term)
+            | MarketService.description.ilike(term)
+            | MarketService.offer.ilike(term)
+            | MarketService.shop_id.in_(
+                db.query(MarketShop.id).filter(
+                    MarketShop.shop_name.ilike(term)
+                )
+            )
+        )
+    services = q.order_by(MarketService.created_at.desc()).all()
+    ordered = services[(page - 1) * limit : page * limit]
+    shop_names = _shop_names(db)
+    return {
+        "services": [_service_api(s, shop_names.get(s.shop_id)) for s in ordered],
+        "total": len(services),
+        "page": page,
+        "limit": limit,
+    }
+
+
+def rate_service(db: Session, service_id: str, stars: float, rater_key: str) -> dict[str, Any]:
+    """Record a rating for a service and fold it into the stored average.
+
+    ``rater_key`` is the account owner key (``org:<id>`` / ``user:<id>``) so a
+    single rater's new rating replaces their previous one.
+    """
+    service = db.query(MarketService).filter(MarketService.id == service_id).first()
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+    stars = max(0.0, min(5.0, float(stars)))
+    # Maintain a simple running average: keep a per-service count+tally across
+    # all raters. Stored on the model columns so it survives restarts.
+    tallies = json.loads(service._rating_tallies or "{}")
+    tally = tallies.get(rater_key)
+    if tally is not None:
+        service._rating_count = max(0, service._rating_count - 1)
+    tallies[rater_key] = stars
+    service._rating_count += 1
+    service._rating_tallies = json.dumps(tallies)
+    service.rating = round(
+        sum(tallies.values()) / len(tallies), 2
+    ) if tallies else 0.0
+    db.commit()
+    db.refresh(service)
+    return _service_api(service)
+
+
+def _shop_names(db: Session) -> dict[str, str]:
+    shops = db.query(MarketShop.id, MarketShop.shop_name).all()
+    return {shop_id: name for shop_id, name in shops}
+
+
+def get_service(db: Session, service_id: str) -> dict[str, Any]:
+    service = db.query(MarketService).filter(MarketService.id == service_id).first()
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+    shop = db.query(MarketShop).filter(MarketShop.id == service.shop_id).first()
+    return _service_api(service, shop.shop_name if shop else None)
 
 
 def list_adverts(db: Session) -> list[dict[str, Any]]:
@@ -294,6 +377,72 @@ def delete_product(db: Session, product_id: str, owner_id: str) -> None:
     if not shop or shop.owner_id != owner_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the shop owner can delete this product")
     db.delete(product)
+    db.commit()
+
+
+def create_service(db: Session, shop_id: str, owner_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    """List a service on the market for an org shop.
+
+    An image is required — a service cannot be listed without one.
+    ``source_id`` is the underlying org service id, so a duplicate upload is
+    rejected per shop.
+    """
+    shop = db.query(MarketShop).filter(MarketShop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    if shop.owner_id != owner_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the shop owner can add services")
+
+    image_url = (data.get("image_url") or "").strip()
+    if not image_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A service image is required before uploading to the market",
+        )
+
+    if not (data.get("name") or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Service name is required")
+
+    source_id = data.get("source_id")
+    if source_id:
+        duplicate = (
+            db.query(MarketService)
+            .filter(
+                MarketService.shop_id == shop_id,
+                MarketService.source_id == source_id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This service is already uploaded to your market",
+            )
+
+    service = MarketService(
+        shop_id=shop_id,
+        source_id=source_id,
+        name=data["name"],
+        price=data.get("price") or 0,
+        offer=data.get("offer"),
+        description=data.get("description"),
+        image_url=image_url,
+        rating=data.get("rating") or 0,
+    )
+    db.add(service)
+    db.commit()
+    db.refresh(service)
+    return _service_api(service, shop.shop_name)
+
+
+def delete_service(db: Session, service_id: str, owner_id: str) -> None:
+    service = db.query(MarketService).filter(MarketService.id == service_id).first()
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+    shop = db.query(MarketShop).filter(MarketShop.id == service.shop_id).first()
+    if not shop or shop.owner_id != owner_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the shop owner can delete this service")
+    db.delete(service)
     db.commit()
 
 
@@ -573,3 +722,140 @@ def delete_order(db: Session, order_id: str) -> dict[str, Any]:
     db.delete(order)
     db.commit()
     return {"message": "Order deleted", "order_id": order_id}
+
+
+# ---------------------------------------------------------------------------
+# Service requests (customer → org)
+# ---------------------------------------------------------------------------
+
+def _service_request_api(req: MarketServiceRequest, service_name: str | None = None, shop_name: str | None = None) -> dict[str, Any]:
+    return {
+        "id": req.id,
+        "service_id": req.service_id,
+        "shop_id": req.shop_id,
+        "org_id": req.org_id,
+        "service_name": service_name,
+        "shop_name": shop_name,
+        "requester_name": req.requester_name,
+        "requester_phone": req.requester_phone,
+        "note": req.note,
+        "status": req.status,
+        "response": req.response,
+        "responded_at": req.responded_at.isoformat() if req.responded_at else None,
+        "created_at": req.created_at.isoformat() if req.created_at else None,
+    }
+
+
+def create_service_request(
+    db: Session,
+    *,
+    service_id: str,
+    requester_name: str,
+    requester_phone: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Public endpoint — a visitor requests a service from a shop."""
+    service = db.query(MarketService).filter(MarketService.id == service_id).first()
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+
+    shop = db.query(MarketShop).filter(MarketShop.id == service.shop_id).first()
+    org_id = _owner_org_id(shop.owner_id) if shop else None
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This service's shop cannot receive requests",
+        )
+
+    req = MarketServiceRequest(
+        service_id=service_id,
+        shop_id=service.shop_id,
+        org_id=org_id,
+        requester_name=requester_name,
+        requester_phone=requester_phone,
+        note=note,
+        status="new",
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+
+    # Notify the org
+    try:
+        from app.db.session import SessionLocal
+        from app.services.org_notification import create_notification
+
+        app_db = SessionLocal()
+        try:
+            create_notification(
+                app_db,
+                org_id=org_id,
+                kind="service_request",
+                title="New service request",
+                message=f"{requester_name} requested \"{service.name}\" from {shop.shop_name if shop else 'your shop'}.",
+                severity="info",
+                ref=req.id,
+                actor_name=requester_name,
+                actor_role="Customer",
+            )
+            app_db.commit()
+        finally:
+            app_db.close()
+    except Exception:
+        pass
+
+    return _service_request_api(req, service_name=service.name, shop_name=shop.shop_name if shop else None)
+
+
+def list_org_service_requests(
+    db: Session,
+    org_id: str,
+    status_filter: str | None = None,
+) -> dict[str, Any]:
+    """List service requests for all shops owned by this org."""
+    q = db.query(MarketServiceRequest).filter(MarketServiceRequest.org_id == org_id)
+    if status_filter:
+        q = q.filter(MarketServiceRequest.status == status_filter)
+    rows = q.order_by(MarketServiceRequest.created_at.desc()).all()
+
+    service_names = {
+        s.id: s.name
+        for s in db.query(MarketService.id, MarketService.name)
+        .filter(MarketService.id.in_({r.service_id for r in rows}))
+        .all()
+    }
+    shop_names_map = _shop_names(db)
+
+    return {
+        "requests": [
+            _service_request_api(r, service_names.get(r.service_id), shop_names_map.get(r.shop_id))
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+def respond_to_service_request(
+    db: Session,
+    *,
+    request_id: str,
+    org_id: str,
+    response_text: str,
+    new_status: str = "responded",
+) -> dict[str, Any]:
+    """Org responds to a service request.  Only the owning org can respond."""
+    req = db.query(MarketServiceRequest).filter(MarketServiceRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    if req.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised for this request")
+
+    req.response = response_text
+    req.status = new_status
+    req.responded_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(req)
+
+    service = db.query(MarketService).filter(MarketService.id == req.service_id).first()
+    shop = db.query(MarketShop).filter(MarketShop.id == req.shop_id).first()
+    return _service_request_api(req, service.name if service else None, shop.shop_name if shop else None)

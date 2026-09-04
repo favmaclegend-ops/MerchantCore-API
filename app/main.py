@@ -125,6 +125,29 @@ def _ensure_market_order_delivery_columns(engine) -> None:
         pass
 
 
+def _ensure_market_service_rating_columns(engine) -> None:
+    """Add rating-tally columns to existing ``market_services`` tables.
+
+    ``create_all`` never alters existing tables, so markets that listed
+    services before ratings existed are migrated here on startup.
+    """
+    try:
+        inspector = inspect(engine)
+        if "market_services" not in inspector.get_table_names():
+            return
+        columns = {c["name"] for c in inspector.get_columns("market_services")}
+        additions = {
+            "_rating_count": "ADD COLUMN _rating_count INTEGER NOT NULL DEFAULT 0",
+            "_rating_tallies": "ADD COLUMN _rating_tallies TEXT NULL",
+        }
+        with engine.begin() as conn:
+            for name, ddl in additions.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE market_services {ddl}"))
+    except Exception:
+        pass
+
+
 def _ensure_org_invoice_columns(engine) -> None:
     """Add customer linkage columns to existing ``org_invoices`` tables.
 
@@ -410,6 +433,7 @@ async def startup() -> None:
     MarketBase.metadata.create_all(bind=market_engine)
     _ensure_market_source_id_column(market_engine)
     _ensure_market_order_delivery_columns(market_engine)
+    _ensure_market_service_rating_columns(market_engine)
 
     # --- Chat database (encrypted conversations) -----------------------------
     chat_db_url = settings.CHAT_DATABASE_URL
