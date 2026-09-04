@@ -4,7 +4,7 @@ All functions receive a SQLAlchemy ``Session`` bound to the market database.
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -746,6 +746,7 @@ def _service_request_api(req: MarketServiceRequest, service_name: str | None = N
         "status": req.status,
         "response": req.response,
         "responded_at": req.responded_at.isoformat() if req.responded_at else None,
+        "completed_at": req.completed_at.isoformat() if req.completed_at else None,
         "created_at": req.created_at.isoformat() if req.created_at else None,
     }
 
@@ -861,6 +862,10 @@ def respond_to_service_request(
 
     When the request came from a logged-in buyer, the response is delivered
     into their encrypted in-app inbox (end-to-end encrypted).
+
+    Transitioning to ``completed`` stamps ``completed_at`` (used to schedule
+    automatic inbox cleanup 4 days later) and records a flag in ``{"_completed"}``
+    so the router can book revenue into the org's general ledger exactly once.
     """
     req = db.query(MarketServiceRequest).filter(MarketServiceRequest.id == request_id).first()
     if not req:
@@ -868,9 +873,12 @@ def respond_to_service_request(
     if req.org_id != org_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised for this request")
 
+    was_completed = req.status == "completed"
     req.response = response_text
     req.status = new_status
     req.responded_at = datetime.now(UTC)
+    if new_status == "completed" and not was_completed:
+        req.completed_at = datetime.now(UTC)
     db.commit()
     db.refresh(req)
 
@@ -894,7 +902,10 @@ def respond_to_service_request(
         except Exception:
             pass
 
-    return _service_request_api(req, service.name if service else None, shop.shop_name if shop else None)
+    result = _service_request_api(req, service.name if service else None, shop.shop_name if shop else None)
+    result["_completed"] = bool(new_status == "completed" and not was_completed)
+    result["_service_price"] = float(service.price) if service and service.price else 0.0
+    return result
 
 
 def _deliver_inbox_message(
@@ -1000,3 +1011,65 @@ def mark_inbox_read(db: Session, user_id: str, message_id: str) -> dict[str, Any
     db.commit()
     db.refresh(msg)
     return _inbox_api(msg)
+
+
+def delete_inbox_message(db: Session, user_id: str, message_id: str) -> dict[str, Any]:
+    """Delete a single inbox message belonging to a buyer."""
+    msg = db.query(CustomerInboxMessage).filter(
+        CustomerInboxMessage.id == message_id,
+        CustomerInboxMessage.user_id == user_id,
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    deleted = _inbox_api(msg)
+    db.delete(msg)
+    db.commit()
+    return {"deleted": True, "message_id": message_id, "message": deleted}
+
+
+def clear_customer_inbox(db: Session, user_id: str) -> dict[str, Any]:
+    """Delete all inbox messages belonging to a buyer."""
+    rows = db.query(CustomerInboxMessage).filter(CustomerInboxMessage.user_id == user_id).all()
+    count = len(rows)
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"deleted": True, "count": count}
+
+
+def purge_expired_inbox(db: Session, *, day_limit: int = 4) -> int:
+    """Delete inbox messages whose linked service request completed > ``day_limit`` days ago.
+
+    Runs periodically as a background cleanup. Only messages whose ``service_request_id``
+    maps to a request that has been ``completed`` for more than ``day_limit`` days are
+    removed; all other messages are left untouched. Returns the number deleted.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=day_limit)).replace(tzinfo=None)
+
+    completed_req_ids = {
+        r[0]
+        for r in db.query(MarketServiceRequest.id)
+        .filter(
+            MarketServiceRequest.status == "completed",
+            MarketServiceRequest.completed_at.isnot(None),
+        )
+        .all()
+    }
+    if not completed_req_ids:
+        return 0
+
+    targets = (
+        db.query(CustomerInboxMessage)
+        .filter(CustomerInboxMessage.service_request_id.in_(completed_req_ids))
+        .all()
+    )
+    ids_to_delete = []
+    for msg in targets:
+        req = db.query(MarketServiceRequest).filter(MarketServiceRequest.id == msg.service_request_id).first()
+        if req and req.completed_at and req.completed_at <= cutoff:
+            ids_to_delete.append(msg.id)
+
+    if ids_to_delete:
+        db.query(CustomerInboxMessage).filter(CustomerInboxMessage.id.in_(ids_to_delete)).delete(synchronize_session=False)
+        db.commit()
+    return len(ids_to_delete)

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from urllib.parse import urlparse
 
@@ -163,6 +164,7 @@ def _ensure_market_service_request_columns(engine) -> None:
             "requester_email": "ADD COLUMN requester_email VARCHAR(255) NULL",
             "requester_address": "ADD COLUMN requester_address VARCHAR(500) NULL",
             "user_id": "ADD COLUMN user_id VARCHAR(36) NULL",
+            "completed_at": "ADD COLUMN completed_at DATETIME NULL",
         }
         with engine.begin() as conn:
             for name, ddl in additions.items():
@@ -388,11 +390,33 @@ def create_application() -> FastAPI:
     return application
 
 
+_inbox_cleanup_task: "asyncio.Task | None" = None
+
+_INBOX_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
+
+
+async def _inbox_cleanup_loop() -> None:
+    """Periodically delete inbox messages whose linked service request completed > 4 days ago."""
+    from app.db.market_session import MarketSessionLocal
+    from app.services.market import purge_expired_inbox
+
+    while True:
+        try:
+            with MarketSessionLocal() as mdb:
+                removed = purge_expired_inbox(mdb)
+            if removed:
+                logger.info("Inbox cleanup removed %s expired message(s)", removed)
+        except Exception:
+            logger.exception("Inbox cleanup task failed")
+        await asyncio.sleep(_INBOX_CLEANUP_INTERVAL_SECONDS)
+
+
 app = create_application()
 
 
 @app.on_event("startup")
 async def startup() -> None:
+    global _inbox_cleanup_task
     # Email / verification-code delivery diagnostic — surfaces a misconfigured
     # provider so it is obvious from the logs instead of silently failing.
     from app.services.email import email_provider_configured
@@ -489,9 +513,22 @@ async def startup() -> None:
     with ChatSessionLocal() as session:
         chat_service.purge_expired(session)
 
+    # Purge inbox messages whose linked service request completed > 4 days ago,
+    # then keep the cleanup running in the background while the app is up.
+    from app.db.market_session import MarketSessionLocal
+    from app.services.market import purge_expired_inbox
+
+    with MarketSessionLocal() as mdb:
+        purge_expired_inbox(mdb)
+
+    _inbox_cleanup_task = asyncio.create_task(_inbox_cleanup_loop())
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global _inbox_cleanup_task
+    if _inbox_cleanup_task:
+        _inbox_cleanup_task.cancel()
     pass
 
 

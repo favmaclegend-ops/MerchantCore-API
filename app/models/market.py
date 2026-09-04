@@ -139,6 +139,7 @@ class MarketServiceRequest(MarketBase, BaseMixin, TimestampMixin):
     status = Column(String(20), nullable=False, default="new", index=True)
     response = Column(Text, nullable=True)
     responded_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
     service = relationship("MarketService")
     shop = relationship("MarketShop")

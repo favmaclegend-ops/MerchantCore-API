@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session
 from app.core.security import decrypt_token, encrypt_token, get_current_member, get_current_user
 from app.db.market_session import get_market_db
 from app.db.session import get_db
-from app.models.organisation import OrgMember
+from app.models.organisation import OrgMember, Organisation
 from app.models.user import User
 from app.services import market
+from app.services.org_notification import create_notification
+from app.services.org_ui import _post_ledger
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -217,19 +219,63 @@ def respond_to_service_request(
     request_id: str,
     body: Annotated[dict, Body()],
     db: MarketDb,
+    org_db: AppDb,
     member: MemberDep,
 ) -> dict:
     response_text = (body.get("response") or "").strip()
     if not response_text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Response text is required")
     new_status = body.get("status") or "responded"
-    return market.respond_to_service_request(
+    result = market.respond_to_service_request(
         db,
         request_id=request_id,
         org_id=member.org_id,
         response_text=response_text,
         new_status=new_status,
     )
+
+    # Booking revenue: when a market service request first transitions to
+    # "completed", post the service price as income into the org's general
+    # ledger (account "Service Sales"). This keeps the service-income figure
+    # and the total revenue dashboard aligned with the permanent ledger.
+    if result.get("_completed"):
+        amount = round(float(result.get("_service_price") or 0.0), 2)
+        org = org_db.query(Organisation).filter(Organisation.id == member.org_id).first()
+        if org is not None and amount > 0:
+            _post_ledger(
+                org_db,
+                org,
+                category="income",
+                account="Service Sales",
+                description=(
+                    f"Service request completed: "
+                    f"{result.get('service_name') or 'service'} "
+                    f"for {result.get('requester_name')}"
+                ),
+                amount=amount,
+                reference=request_id,
+            )
+            create_notification(
+                org_db,
+                org_id=member.org_id,
+                kind="service",
+                title="Service request completed",
+                message=(
+                    f"Request for {result.get('service_name') or 'service'} "
+                    f"({result.get('requester_name')}) completed — {amount} "
+                    f"booked to Service Sales."
+                ),
+                severity="success",
+                amount=amount,
+                ref=request_id,
+                actor_name=member.full_name,
+                actor_role=member.role,
+            )
+            org_db.commit()
+
+    result.pop("_completed", None)
+    result.pop("_service_price", None)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -365,3 +411,13 @@ def customer_inbox_unread(db: MarketDb, user: UserDep) -> dict:
 @router.put("/inbox/{message_id}/read")
 def read_inbox_message(message_id: str, db: MarketDb, user: UserDep) -> dict:
     return market.mark_inbox_read(db, user_id=user.id, message_id=message_id)
+
+
+@router.delete("/inbox")
+def clear_inbox(db: MarketDb, user: UserDep) -> dict:
+    return market.clear_customer_inbox(db, user_id=user.id)
+
+
+@router.delete("/inbox/{message_id}")
+def delete_inbox_message(message_id: str, db: MarketDb, user: UserDep) -> dict:
+    return market.delete_inbox_message(db, user_id=user.id, message_id=message_id)
