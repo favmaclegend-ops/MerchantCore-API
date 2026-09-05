@@ -70,6 +70,26 @@ from app.routers import (
 )
 
 
+
+
+def _ensure_market_rating_columns(engine) -> None:
+    try:
+        inspector = inspect(engine)
+        for table in ["market_shops", "market_products", "market_services"]:
+            if table not in inspector.get_table_names():
+                continue
+            columns = {c["name"] for c in inspector.get_columns(table)}
+            with engine.begin() as conn:
+                if "rating" not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN rating FLOAT NOT NULL DEFAULT 0"))
+                if "_rating_count" not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN _rating_count INTEGER NOT NULL DEFAULT 0"))
+                if "_rating_tallies" not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN _rating_tallies TEXT NULL"))
+    except Exception:
+        pass
+
+
 def _ensure_market_source_id_column(engine) -> None:
     """Add the ``source_id`` column to existing market_products tables.
 
@@ -165,6 +185,7 @@ def _ensure_market_service_request_columns(engine) -> None:
             "requester_address": "ADD COLUMN requester_address VARCHAR(500) NULL",
             "user_id": "ADD COLUMN user_id VARCHAR(36) NULL",
             "completed_at": "ADD COLUMN completed_at DATETIME NULL",
+            "delete_at": "ADD COLUMN delete_at DATETIME NULL",
         }
         with engine.begin() as conn:
             for name, ddl in additions.items():
@@ -236,6 +257,38 @@ def _ensure_user_id_columns(engine) -> None:
             if "user_id" not in columns:
                 with engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(36) NULL"))
+    except Exception:
+        pass
+
+
+def _ensure_personal_owner_columns(engine) -> None:
+    """Scope personal business data (products, sales, transactions, credit,
+    customers) to a single owning account.
+
+    ``create_all`` never alters existing tables, so rows created before the
+    per-user isolation feature are migrated here on startup: each legacy row is
+    claimed by the oldest registered user so nothing is orphaned or dropped.
+    """
+    try:
+        inspector = inspect(engine)
+        with engine.begin() as conn:
+            for table in ("notifications", "products", "sales", "transactions", "credit_entries", "customers"):
+                if table not in inspector.get_table_names():
+                    continue
+                columns = {c["name"] for c in inspector.get_columns(table)}
+                if "user_id" not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(36) NULL"))
+            oldest_user = conn.execute(
+                text("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
+            ).scalar()
+            if oldest_user:
+                for table in ("notifications", "products", "sales", "transactions", "credit_entries", "customers"):
+                    if table not in inspector.get_table_names():
+                        continue
+                    conn.execute(
+                        text(f"UPDATE {table} SET user_id = :uid WHERE user_id IS NULL"),
+                        {"uid": oldest_user},
+                    )
     except Exception:
         pass
 
@@ -396,9 +449,10 @@ _INBOX_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
 
 
 async def _inbox_cleanup_loop() -> None:
-    """Periodically delete inbox messages whose linked service request completed > 4 days ago."""
+    """Periodically delete inbox messages whose linked service request completed > 4 days ago
+    and completed service requests whose auto-delete deadline has passed."""
     from app.db.market_session import MarketSessionLocal
-    from app.services.market import purge_expired_inbox
+    from app.services.market import purge_expired_inbox, purge_expired_service_requests
 
     while True:
         try:
@@ -406,6 +460,10 @@ async def _inbox_cleanup_loop() -> None:
                 removed = purge_expired_inbox(mdb)
             if removed:
                 logger.info("Inbox cleanup removed %s expired message(s)", removed)
+            with MarketSessionLocal() as mdb:
+                removed_reqs = purge_expired_service_requests(mdb)
+            if removed_reqs:
+                logger.info("Service-request cleanup removed %s expired request(s)", removed_reqs)
         except Exception:
             logger.exception("Inbox cleanup task failed")
         await asyncio.sleep(_INBOX_CLEANUP_INTERVAL_SECONDS)
@@ -451,6 +509,7 @@ async def startup() -> None:
             pass
 
     Base.metadata.create_all(bind=engine)
+    _ensure_personal_owner_columns(engine)
     _ensure_org_invoice_columns(engine)
     _ensure_org_attendance_columns(engine)
     _ensure_user_id_columns(engine)
@@ -483,6 +542,7 @@ async def startup() -> None:
     _ensure_market_order_delivery_columns(market_engine)
     _ensure_market_service_rating_columns(market_engine)
     _ensure_market_service_request_columns(market_engine)
+    _ensure_market_rating_columns(market_engine)
 
     # --- Chat database (encrypted conversations) -----------------------------
     chat_db_url = settings.CHAT_DATABASE_URL
@@ -514,12 +574,15 @@ async def startup() -> None:
         chat_service.purge_expired(session)
 
     # Purge inbox messages whose linked service request completed > 4 days ago,
+    # plus completed service requests whose auto-delete deadline has passed,
     # then keep the cleanup running in the background while the app is up.
     from app.db.market_session import MarketSessionLocal
-    from app.services.market import purge_expired_inbox
+    from app.services.market import purge_expired_inbox, purge_expired_service_requests
 
     with MarketSessionLocal() as mdb:
         purge_expired_inbox(mdb)
+    with MarketSessionLocal() as mdb:
+        purge_expired_service_requests(mdb)
 
     _inbox_cleanup_task = asyncio.create_task(_inbox_cleanup_loop())
 

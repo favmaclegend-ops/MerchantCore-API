@@ -278,6 +278,12 @@ def respond_to_service_request(
     return result
 
 
+@router.delete("/services/requests/{request_id}")
+def delete_service_request(request_id: str, db: MarketDb, member: MemberDep) -> dict:
+    """Delete a completed service request (org side, admin-only)."""
+    return market.delete_service_request(db, request_id=request_id, org_id=member.org_id)
+
+
 # ---------------------------------------------------------------------------
 # Market orders (buyer = personal user JWT)
 # ---------------------------------------------------------------------------
@@ -421,3 +427,38 @@ def clear_inbox(db: MarketDb, user: UserDep) -> dict:
 @router.delete("/inbox/{message_id}")
 def delete_inbox_message(message_id: str, db: MarketDb, user: UserDep) -> dict:
     return market.delete_inbox_message(db, user_id=user.id, message_id=message_id)
+
+@router.get("/top-products")
+def top_products(db: MarketDb, limit: int = Query(6, ge=1, le=20)) -> list[dict]:
+    return market.list_top_products(db, limit=limit)
+
+@router.put("/products/{product_id}/rate")
+def rate_product(
+    product_id: str,
+    body: Annotated[dict, Body()],
+    db: MarketDb,
+) -> dict:
+    stars = body.get("stars")
+    rater = body.get("rater")
+    return market.rate_product(
+        db,
+        product_id=product_id,
+        stars=float(stars) if stars is not None else 0,
+        rater_key=str(rater or ""),
+    )
+
+
+@router.put("/shops/{shop_id}/rate")
+def rate_shop(
+    shop_id: str,
+    body: Annotated[dict, Body()],
+    db: MarketDb,
+) -> dict:
+    stars = body.get("stars")
+    rater = body.get("rater")
+    return market.rate_shop(
+        db,
+        shop_id=shop_id,
+        stars=float(stars) if stars is not None else 0,
+        rater_key=str(rater or ""),
+    )

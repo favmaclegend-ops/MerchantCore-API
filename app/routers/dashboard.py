@@ -5,56 +5,68 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.credit_entry import CreditEntry
 from app.models.customer import Customer
 from app.models.product import Product
 from app.models.transaction import Transaction
+from app.models.user import User
 from app.schemas.sale import DashboardStats, RevenuePoint, RevenueTrend
 
 router = APIRouter(tags=["dashboard"])
 
 
 @router.get("/dashboard/stats", response_model=DashboardStats)
-def get_dashboard_stats(db: Session = Depends(get_db)) -> dict:
+def get_dashboard_stats(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> dict:
     total_revenue = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+        Transaction.user_id == user.id,
         Transaction.type == "sale",
         Transaction.status == "completed",
     ).scalar()
 
     thirty_days_ago = datetime.now(UTC) - timedelta(days=30)
     monthly_revenue = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+        Transaction.user_id == user.id,
         Transaction.type == "sale",
         Transaction.status == "completed",
         Transaction.created_at >= thirty_days_ago,
     ).scalar()
 
     total_orders = db.query(func.count(Transaction.id)).filter(
+        Transaction.user_id == user.id,
         Transaction.type == "sale",
     ).scalar()
 
     completed_orders = db.query(func.count(Transaction.id)).filter(
+        Transaction.user_id == user.id,
         Transaction.type == "sale",
         Transaction.status == "completed",
     ).scalar()
 
     active_customers = db.query(func.count(Customer.id)).filter(
+        Customer.user_id == user.id,
         Customer.status == "active",
     ).scalar()
 
     low_stock = db.query(func.count(Product.id)).filter(
+        Product.user_id == user.id,
         Product.status == "low-stock",
     ).scalar()
 
     inventory_value = db.query(
         func.coalesce(func.sum(Product.price * Product.stock), 0)
-    ).scalar()
+    ).filter(Product.user_id == user.id).scalar()
 
-    total_products = db.query(func.count(Product.id)).scalar()
+    total_products = db.query(func.count(Product.id)).filter(
+        Product.user_id == user.id,
+    ).scalar()
 
     credit_outstanding = db.query(
         func.coalesce(func.sum(CreditEntry.balance), 0)
-    ).scalar()
+    ).filter(CreditEntry.user_id == user.id).scalar()
 
     avg_ticket = (float(total_revenue or 0) / completed_orders) if completed_orders else 0
 
@@ -72,9 +84,12 @@ def get_dashboard_stats(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/dashboard/revenue-trend", response_model=RevenueTrend)
-def get_revenue_trend(db: Session = Depends(get_db)) -> dict:
+def get_revenue_trend(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> dict:
     six_months_ago = datetime.now(UTC) - timedelta(days=180)
     txns = db.query(Transaction).filter(
+        Transaction.user_id == user.id,
         Transaction.type == "sale",
         Transaction.status == "completed",
         Transaction.created_at >= six_months_ago,

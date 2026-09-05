@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
 
 from app.db.session import Base
 
@@ -10,6 +10,12 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     type = Column(String(20), nullable=False)
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)

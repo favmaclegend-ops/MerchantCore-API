@@ -16,13 +16,8 @@ def get_current_user_info(user: User = Depends(get_current_user)) -> User:
 
 
 @router.get("/users", response_model=list[UserResponse])
-def list_users(db: Session = Depends(get_db)) -> list:
-    cached = user_list_cache.get("all")
-    if cached is not None:
-        return cached
-    users = db.query(User).all()
-    user_list_cache["all"] = users
-    return users
+def list_users(user: User = Depends(get_current_user)) -> list:
+    return [user]
 
 
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -47,29 +42,26 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
-def get_user(user_id: str, db: Session = Depends(get_db)) -> User:
-    cache_key = f"user_id:{user_id}"
-    cached = user_cache.get(cache_key)
-    if cached is not None:
-        return cached
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
+def get_user(user_id: str, user: User = Depends(get_current_user)) -> User:
+    if user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    user_cache[cache_key] = user
     return user
 
 
 @router.patch("/users/{user_id}", response_model=UserResponse)
-def update_user(user_id: str, user_in: UserUpdate, db: Session = Depends(get_db)) -> User:
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
+def update_user(
+    user_id: str,
+    user_in: UserUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> User:
+    if user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only update your own account")
     update_data = user_in.model_dump(exclude_unset=True)
     if "password" in update_data and update_data["password"] is not None:
         update_data["hashed_password"] = get_password_hash(update_data.pop("password"))
     if "email" in update_data and update_data["email"] is not None:
-        existing = db.query(User).filter(User.email == update_data["email"], User.id != user_id).first()
+        existing = db.query(User).filter(User.email == update_data["email"], User.id != user.id).first()
         if existing:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already in use")
 
@@ -84,10 +76,13 @@ def update_user(user_id: str, user_in: UserUpdate, db: Session = Depends(get_db)
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: str, db: Session = Depends(get_db)) -> None:
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    if user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only delete your own account")
 
     db.delete(user)
     db.commit()

@@ -24,6 +24,8 @@ class MarketShop(MarketBase, BaseMixin, TimestampMixin):
     address = Column(String(500), nullable=True)
     city = Column(String(255), nullable=True)
     rating = Column(Float, nullable=False, default=0)
+    _rating_count = Column(Integer, nullable=False, default=0)
+    _rating_tallies = Column(Text, nullable=True)
     verified = Column(Boolean, nullable=False, default=False)
 
     products = relationship("MarketProduct", back_populates="shop", cascade="all, delete-orphan")
@@ -48,6 +50,9 @@ class MarketProduct(MarketBase, BaseMixin, TimestampMixin):
     in_stock = Column(Boolean, nullable=False, default=True)
     image_url = Column(String(1000), nullable=True)
     keywords = Column(Text, nullable=True)
+    rating = Column(Float, nullable=False, default=0)
+    _rating_count = Column(Integer, nullable=False, default=0)
+    _rating_tallies = Column(Text, nullable=True)
 
     shop = relationship("MarketShop", back_populates="products")
     images = relationship("MarketProductImage", back_populates="product", cascade="all, delete-orphan")
@@ -140,6 +145,7 @@ class MarketServiceRequest(MarketBase, BaseMixin, TimestampMixin):
     response = Column(Text, nullable=True)
     responded_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    delete_at = Column(DateTime, nullable=True, index=True)
 
     service = relationship("MarketService")
     shop = relationship("MarketShop")

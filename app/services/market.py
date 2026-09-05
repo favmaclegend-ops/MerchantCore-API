@@ -56,10 +56,11 @@ def _variant_api(v: MarketProductVariant) -> dict[str, Any]:
     }
 
 
-def _product_api(p: MarketProduct) -> dict[str, Any]:
+def _product_api(p: MarketProduct, shop_name: str | None = None) -> dict[str, Any]:
     return {
         "id": p.id,
         "shop_id": p.shop_id,
+        "shop_name": shop_name,
         "source_id": p.source_id,
         "name": p.name,
         "price": p.price,
@@ -71,6 +72,8 @@ def _product_api(p: MarketProduct) -> dict[str, Any]:
         "images": [_product_image_api(img) for img in sorted(p.images, key=lambda i: i.sort_order)],
         "variants": [_variant_api(v) for v in p.variants],
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        "rating": p.rating,
+        "rating_breakdown": _calculate_breakdown(p._rating_tallies),
     }
 
 
@@ -130,8 +133,10 @@ def get_shop(db: Session, shop_id: str) -> dict[str, Any]:
     if not shop:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
     products = db.query(MarketProduct).filter(MarketProduct.shop_id == shop_id).order_by(MarketProduct.created_at.desc()).all()
+    services = db.query(MarketService).filter(MarketService.shop_id == shop_id).order_by(MarketService.created_at.desc()).all()
     data = _shop_api(shop)
-    data["products"] = [_product_api(p) for p in products]
+    data["products"] = [_product_api(p, shop.shop_name) for p in products]
+    data["services"] = [_service_api(s, shop.shop_name) for s in services]
     return data
 
 
@@ -154,14 +159,16 @@ def list_products(
         )
     total = q.count()
     products = q.order_by(MarketProduct.created_at.desc()).offset((page - 1) * limit).limit(limit).all()
-    return {"products": [_product_api(p) for p in products], "total": total, "page": page, "limit": limit}
+    shop_names = _shop_names(db)
+    return {"products": [_product_api(p, shop_names.get(p.shop_id)) for p in products], "total": total, "page": page, "limit": limit}
 
 
 def get_product(db: Session, product_id: str) -> dict[str, Any]:
     product = db.query(MarketProduct).filter(MarketProduct.id == product_id).first()
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
-    return _product_api(product)
+    shop_name = product.shop.shop_name if product.shop else None
+    return _product_api(product, shop_name=shop_name)
 
 
 def list_services(db: Session, search: str | None = None, page: int = 1, limit: int = 60) -> dict[str, Any]:
@@ -662,21 +669,6 @@ def complete_order(
         ref=order.id,
     )
 
-    try:
-        from app.models.notification import Notification
-
-        app_db.add(
-            Notification(
-                type="market_order",
-                title="Order completed",
-                message=f"Your market order {order.id[:8]} was completed by the shop.",
-                link=None,
-                is_read=False,
-            )
-        )
-    except Exception:
-        pass
-
     app_db.commit()
     db.refresh(order)
     return _order_api(order)
@@ -863,9 +855,10 @@ def respond_to_service_request(
     When the request came from a logged-in buyer, the response is delivered
     into their encrypted in-app inbox (end-to-end encrypted).
 
-    Transitioning to ``completed`` stamps ``completed_at`` (used to schedule
-    automatic inbox cleanup 4 days later) and records a flag in ``{"_completed"}``
-    so the router can book revenue into the org's general ledger exactly once.
+    Transitioning to ``completed`` stamps ``completed_at`` and schedules
+    automatic deletion 4 days later (``delete_at``) and records a flag in
+    ``{"_completed"}`` so the router can book revenue into the org's general
+    ledger exactly once.
     """
     req = db.query(MarketServiceRequest).filter(MarketServiceRequest.id == request_id).first()
     if not req:
@@ -879,6 +872,7 @@ def respond_to_service_request(
     req.responded_at = datetime.now(UTC)
     if new_status == "completed" and not was_completed:
         req.completed_at = datetime.now(UTC)
+        req.delete_at = req.completed_at + timedelta(days=4)
     db.commit()
     db.refresh(req)
 
@@ -1073,3 +1067,101 @@ def purge_expired_inbox(db: Session, *, day_limit: int = 4) -> int:
         db.query(CustomerInboxMessage).filter(CustomerInboxMessage.id.in_(ids_to_delete)).delete(synchronize_session=False)
         db.commit()
     return len(ids_to_delete)
+
+
+def delete_service_request(db: Session, *, request_id: str, org_id: str) -> dict[str, Any]:
+    """Delete a completed service request owned by the org.
+
+    Only requests that have already been completed can be deleted by the org;
+    otherwise a ``409`` is raised. Returns the deleted request's API shape.
+    """
+    req = db.query(MarketServiceRequest).filter(MarketServiceRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    if req.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised for this request")
+    if req.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only completed service requests can be deleted",
+        )
+    service = db.query(MarketService).filter(MarketService.id == req.service_id).first()
+    shop = db.query(MarketShop).filter(MarketShop.id == req.shop_id).first()
+    result = _service_request_api(req, service.name if service else None, shop.shop_name if shop else None)
+    db.delete(req)
+    db.commit()
+    return result
+
+
+def purge_expired_service_requests(db: Session, *, day_limit: int = 4) -> int:
+    """Delete completed service requests whose ``delete_at`` deadline has passed.
+
+    Runs periodically as a background cleanup. A request is auto-deleted 4 days
+    after it is completed (``delete_at`` set when the request transitions to
+    ``completed``). Returns the number removed.
+    """
+    now = datetime.now(UTC).replace(tzinfo=None)
+    targets = (
+        db.query(MarketServiceRequest)
+        .filter(
+            MarketServiceRequest.status == "completed",
+            MarketServiceRequest.delete_at.isnot(None),
+            MarketServiceRequest.delete_at <= now,
+        )
+        .all()
+    )
+    count = len(targets)
+    for req in targets:
+        db.delete(req)
+    if count:
+        db.commit()
+    return count
+
+def list_top_products(db: Session, limit: int = 6) -> list[dict[str, Any]]:
+    products = db.query(MarketProduct).filter(MarketProduct.in_stock == True).order_by(MarketProduct.rating.desc()).limit(limit).all()
+    shop_names = _shop_names(db)
+    return [_product_api(p, shop_names.get(p.shop_id)) for p in products]
+
+def rate_product(db: Session, product_id: str, stars: float, rater_key: str) -> dict[str, Any]:
+    product = db.query(MarketProduct).filter(MarketProduct.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    stars = max(0.0, min(5.0, float(stars)))
+    tallies = json.loads(product._rating_tallies or "{}")
+    tallies[rater_key] = stars
+    product._rating_tallies = json.dumps(tallies)
+    product._rating_count = len(tallies)
+    product.rating = round(sum(tallies.values()) / len(tallies), 2) if tallies else 0.0
+    db.commit()
+    db.refresh(product)
+    return _product_api(product)
+
+
+def rate_shop(db: Session, shop_id: str, stars: float, rater_key: str) -> dict[str, Any]:
+    shop = db.query(MarketShop).filter(MarketShop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    stars = max(0.0, min(5.0, float(stars)))
+    tallies = json.loads(shop._rating_tallies or "{}")
+    tallies[rater_key] = stars
+    shop._rating_tallies = json.dumps(tallies)
+    shop._rating_count = len(tallies)
+    shop.rating = round(sum(tallies.values()) / len(tallies), 2) if tallies else 0.0
+    db.commit()
+    db.refresh(shop)
+    return _shop_api(shop)
+
+def _calculate_breakdown(tallies_json: str | None) -> dict[int, int]:
+    try:
+        tallies = json.loads(tallies_json or "{}")
+    except Exception:
+        tallies = {}
+    breakdown = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
+    for val in tallies.values():
+        try:
+            score = int(round(float(val)))
+            if 1 <= score <= 5:
+                breakdown[score] += 1
+        except Exception:
+            continue
+    return breakdown

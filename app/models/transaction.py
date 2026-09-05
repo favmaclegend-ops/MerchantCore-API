@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, Float, String
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String
 
 from app.db.session import Base
 
@@ -10,6 +10,12 @@ class Transaction(Base):
     __tablename__ = "transactions"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     type = Column(String(20), nullable=False)
     customer_name = Column(String(255), nullable=True)
     amount = Column(Float, nullable=False)

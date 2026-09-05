@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String
 
 from app.db.session import Base
 
@@ -10,6 +10,12 @@ class CreditEntry(Base):
     __tablename__ = "credit_entries"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     customer_id = Column(String(36), nullable=False)
     customer_name = Column(String(255), nullable=False)
     customer_code = Column(String(50), nullable=True)
